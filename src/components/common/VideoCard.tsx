@@ -1,0 +1,113 @@
+import React from 'react';
+import { Play, Clock, Sparkles } from 'lucide-react';
+import { VideoItem } from '../../types/video';
+
+interface VideoCardProps {
+  video: VideoItem;
+  onSelect: (video: VideoItem) => void;
+  onOpenDetails?: (video: VideoItem) => void;
+  showProgress?: boolean;
+}
+
+export const VideoCard: React.FC<VideoCardProps> = ({
+  video,
+  onSelect,
+  onOpenDetails,
+  showProgress = false,
+}) => {
+  return (
+    <div
+      onClick={() => onSelect(video)}
+      className="group relative flex flex-col bg-[#12131A] rounded-xl overflow-hidden border border-slate-800/90 hover:border-indigo-500/50 transition-all duration-200 cursor-pointer text-left hover:-translate-y-1 hover:shadow-xl hover:shadow-indigo-950/20"
+    >
+      {/* Container da Capa / Thumbnail */}
+      <div className="relative aspect-video w-full bg-slate-900 overflow-hidden">
+        <img
+          src={video.posterUrl}
+          alt={video.title}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+        />
+
+        {/* Gradiente escuro no rodapé da capa */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent pointer-events-none" />
+
+        {/* Tag de demonstração técnica ou arquivo local da sessão */}
+        {video.isLocalFile ? (
+          <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-emerald-300 bg-black/70 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-emerald-500/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            <span>Arquivo Local</span>
+          </div>
+        ) : video.isDemo ? (
+          <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-indigo-300 bg-black/70 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-indigo-500/30">
+            <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+            <span>Amostra</span>
+          </div>
+        ) : null}
+
+        {/* Resolução */}
+        <div className="absolute top-2.5 right-2.5 text-[10px] font-mono text-slate-300 bg-black/70 px-1.5 py-0.5 rounded backdrop-blur-sm border border-slate-800">
+          {video.resolution}
+        </div>
+
+        {/* Duração no canto inferior direito */}
+        <div className="absolute bottom-2.5 right-2.5 text-[11px] font-mono font-medium text-white bg-black/80 px-2 py-0.5 rounded flex items-center gap-1 border border-slate-700/50">
+          <Clock className="w-3 h-3 text-slate-400" />
+          <span>{video.durationFormatted}</span>
+        </div>
+
+        {/* Ícone de Play central no hover/touch */}
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-[2px]">
+          <div className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
+            <Play className="w-5 h-5 ml-0.5 fill-current" />
+          </div>
+        </div>
+
+        {/* Barra de progresso de "Continuar Assistindo" */}
+        {showProgress && video.continueWatchingProgress !== undefined && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-800">
+            <div
+              className="h-full bg-indigo-500"
+              style={{ width: `${video.continueWatchingProgress}%` }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Metadados e Título */}
+      <div className="p-3.5 flex flex-col flex-1 justify-between gap-2">
+        <div>
+          {/* Metadados não encaixotados com separadores sutis */}
+          <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-1">
+            <span className="text-indigo-400 truncate max-w-[150px]">{video.category}</span>
+            <span aria-hidden="true">·</span>
+            <span>{new Date(video.createdAt).toLocaleDateString('pt-BR', { month: 'short', day: 'numeric' })}</span>
+          </div>
+
+          <h3 className="text-sm font-semibold text-slate-100 line-clamp-2 group-hover:text-indigo-300 transition-colors leading-snug">
+            {video.title}
+          </h3>
+        </div>
+
+        {/* Ações inferiores discretas */}
+        <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs">
+          <span className="text-[11px] text-slate-400 truncate max-w-[160px]">
+            {video.tags.slice(0, 2).join(' · ')}
+          </span>
+          {onOpenDetails && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDetails(video);
+              }}
+              className="text-xs text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800 transition-colors shrink-0"
+            >
+              Info
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

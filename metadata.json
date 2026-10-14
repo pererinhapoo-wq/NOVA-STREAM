@@ -1,0 +1,8 @@
+{
+  "name": "NOVA STREAM - Plataforma Privada de Streaming",
+  "description": "Plataforma própria para armazenamento, organização e transmissão privada de vídeos com interface moderna de streaming.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
