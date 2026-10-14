@@ -1,6 +1,7 @@
 import React from 'react';
-import { Play, Clock, Sparkles } from 'lucide-react';
+import { Play, Clock, Sparkles, AlertTriangle, UploadCloud } from 'lucide-react';
 import { VideoItem } from '../../types/video';
+import { hasLocalVideoFile } from '../../services/videoData';
 
 interface VideoCardProps {
   video: VideoItem;
@@ -15,10 +16,27 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   onOpenDetails,
   showProgress = false,
 }) => {
+  const isAvailable = !video.isLocalFile || hasLocalVideoFile(video.id);
+
+  const handleCardClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!isAvailable) {
+      if (onOpenDetails) {
+        onOpenDetails(video);
+      }
+      return;
+    }
+    onSelect(video);
+  };
+
   return (
     <div
-      onClick={() => onSelect(video)}
-      className="group relative flex flex-col bg-[#12131A] rounded-xl overflow-hidden border border-slate-800/90 hover:border-indigo-500/50 transition-all duration-200 cursor-pointer text-left hover:-translate-y-1 hover:shadow-xl hover:shadow-indigo-950/20"
+      onClick={handleCardClick}
+      className={`group relative flex flex-col bg-[#12131A] rounded-xl overflow-hidden border transition-all duration-200 cursor-pointer text-left hover:-translate-y-1 hover:shadow-xl ${
+        !isAvailable
+          ? 'border-amber-700/60 hover:border-amber-500/80 hover:shadow-amber-950/20'
+          : 'border-slate-800/90 hover:border-indigo-500/50 hover:shadow-indigo-950/20'
+      }`}
     >
       {/* Container da Capa / Thumbnail */}
       <div className="relative aspect-video w-full bg-slate-900 overflow-hidden">
@@ -35,10 +53,17 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 
         {/* Tag de demonstração técnica ou arquivo local da sessão */}
         {video.isLocalFile ? (
-          <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-emerald-300 bg-black/70 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-emerald-500/30">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span>Arquivo Local</span>
-          </div>
+          isAvailable ? (
+            <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-emerald-300 bg-black/80 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-emerald-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span>Arquivo Local</span>
+            </div>
+          ) : (
+            <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-amber-300 bg-black/85 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-amber-500/50 shadow-md">
+              <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
+              <span>Arquivo Pendente</span>
+            </div>
+          )
         ) : video.isDemo ? (
           <div className="absolute top-2.5 left-2.5 text-[10px] font-medium tracking-wide text-indigo-300 bg-black/70 px-2 py-0.5 rounded backdrop-blur-sm flex items-center gap-1 border border-indigo-500/30">
             <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
@@ -57,15 +82,22 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           <span>{video.durationFormatted}</span>
         </div>
 
-        {/* Ícone de Play central no hover/touch */}
-        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-[2px]">
-          <div className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
-            <Play className="w-5 h-5 ml-0.5 fill-current" />
-          </div>
+        {/* Ícone de Play central ou Ação de Reconexão no hover/touch */}
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/45 backdrop-blur-[2px]">
+          {isAvailable ? (
+            <div className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover:scale-100 transition-transform">
+              <Play className="w-5 h-5 ml-0.5 fill-current" />
+            </div>
+          ) : (
+            <div className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xl border border-amber-400/30 transform scale-95 group-hover:scale-100 transition-transform">
+              <UploadCloud className="w-4 h-4" />
+              <span>Reconectar Arquivo</span>
+            </div>
+          )}
         </div>
 
         {/* Barra de progresso de "Continuar Assistindo" */}
-        {showProgress && video.continueWatchingProgress !== undefined && (
+        {showProgress && isAvailable && video.continueWatchingProgress !== undefined && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-800">
             <div
               className="h-full bg-indigo-500"
@@ -97,13 +129,19 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           </span>
           {onOpenDetails && (
             <button
+              type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 onOpenDetails(video);
               }}
-              className="text-xs text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800 transition-colors shrink-0"
+              className={`text-xs px-2 py-0.5 rounded transition-colors shrink-0 ${
+                !isAvailable
+                  ? 'text-amber-300 bg-amber-950/60 hover:bg-amber-900/80 border border-amber-700/60 font-medium'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
             >
-              Info
+              {!isAvailable ? 'Reconectar' : 'Info'}
             </button>
           )}
         </div>

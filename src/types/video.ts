@@ -27,6 +27,7 @@ export interface VideoItem {
   videoUrl: string;
   isDemo: boolean;
   isLocalFile?: boolean; // Flag indicando que é um arquivo local da sessão atual
+  originalFileName?: string; // Nome original do arquivo selecionado
   demoNotice?: string;
   createdAt: string; // ISO date
   resolution: VideoResolution;

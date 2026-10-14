@@ -135,6 +135,33 @@ export const getLocalVideoUrl = (videoId: string): string | null => {
 };
 
 /**
+ * Retorna se o arquivo local do vídeo está presente na memória da sessão atual.
+ */
+export const hasLocalVideoFile = (videoId: string): boolean => {
+  return localVideoFilesRegistry.has(videoId);
+};
+
+/**
+ * Retorna o objeto File real caso ainda esteja registrado na sessão.
+ */
+export const getLocalVideoFile = (videoId: string): File | null => {
+  const entry = localVideoFilesRegistry.get(videoId);
+  return entry ? entry.file : null;
+};
+
+/**
+ * Verifica se um vídeo está pronto e disponível para reprodução.
+ * Vídeos de demonstração/remotos estão sempre disponíveis.
+ * Vídeos locais só estão disponíveis se o arquivo estiver na memória da sessão.
+ */
+export const isLocalVideoAvailable = (video: VideoItem): boolean => {
+  if (!video.isLocalFile) {
+    return Boolean(video.videoUrl);
+  }
+  return hasLocalVideoFile(video.id) && Boolean(getLocalVideoUrl(video.id));
+};
+
+/**
  * Revoga a URL temporária e limpa a referência ao arquivo da memória quando o vídeo é excluído.
  */
 export const revokeLocalVideoFile = (videoId: string): void => {
@@ -170,9 +197,9 @@ export const getStoredVideos = (): VideoItem[] => {
   if (inMemoryVideosCache && inMemoryVideosCache.length > 0) {
     // Reassocia URLs locais caso existam no registro de sessão
     return inMemoryVideosCache.map((v) => {
-      const localUrl = getLocalVideoUrl(v.id);
-      if (localUrl) {
-        return { ...v, videoUrl: localUrl };
+      if (v.isLocalFile) {
+        const localUrl = getLocalVideoUrl(v.id);
+        return { ...v, videoUrl: localUrl || '' };
       }
       return v;
     });
@@ -187,9 +214,9 @@ export const getStoredVideos = (): VideoItem[] => {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
       inMemoryVideosCache = parsed.map((v: VideoItem) => {
-        const localUrl = getLocalVideoUrl(v.id);
-        if (localUrl) {
-          return { ...v, videoUrl: localUrl };
+        if (v.isLocalFile) {
+          const localUrl = getLocalVideoUrl(v.id);
+          return { ...v, videoUrl: localUrl || '' };
         }
         return v;
       });
@@ -212,8 +239,8 @@ export const saveStoredVideos = (videos: VideoItem[]): boolean => {
     if (typeof window !== 'undefined' && window.localStorage) {
       // NÃO armazena o arquivo nem URLs 'blob:' efêmeras em localStorage para evitar erros de serialização
       const sanitized = videos.map((v) => {
-        if (v.isLocalFile || v.videoUrl.startsWith('blob:')) {
-          return { ...v, videoUrl: '' }; // mantido na memória e recuperado via getLocalVideoUrl
+        if (v.isLocalFile || (typeof v.videoUrl === 'string' && v.videoUrl.startsWith('blob:'))) {
+          return { ...v, videoUrl: '' }; // mantido na memória da sessão e recuperado via getLocalVideoUrl
         }
         return v;
       });

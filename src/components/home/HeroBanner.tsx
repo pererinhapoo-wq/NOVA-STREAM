@@ -1,6 +1,7 @@
 import React from 'react';
-import { Play, Info, ShieldCheck } from 'lucide-react';
+import { Play, Info, ShieldCheck, UploadCloud, AlertTriangle } from 'lucide-react';
 import { VideoItem } from '../../types/video';
+import { hasLocalVideoFile } from '../../services/videoData';
 
 interface HeroBannerProps {
   video: VideoItem;
@@ -9,6 +10,8 @@ interface HeroBannerProps {
 }
 
 export const HeroBanner: React.FC<HeroBannerProps> = ({ video, onWatch, onOpenDetails }) => {
+  const isAvailable = !video.isLocalFile || hasLocalVideoFile(video.id);
+
   return (
     <div className="relative w-full rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 shadow-2xl mb-10 group">
       {/* Imagem de Fundo com Aspecto Cinematográfico */}
@@ -36,9 +39,15 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ video, onWatch, onOpenDe
             <span aria-hidden="true" className="text-slate-600">·</span>
             <span className="font-mono text-slate-400">{video.durationFormatted}</span>
             <span aria-hidden="true" className="text-slate-600">·</span>
-            <span className="text-emerald-400 font-medium flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 inline" /> Acesso Restrito
-            </span>
+            {isAvailable ? (
+              <span className="text-emerald-400 font-medium flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5 inline" /> Acesso Restrito
+              </span>
+            ) : (
+              <span className="text-amber-400 font-medium flex items-center gap-1">
+                <AlertTriangle className="w-3.5 h-3.5 inline" /> Arquivo Pendente
+              </span>
+            )}
           </div>
 
           {/* Título Principal */}
@@ -53,16 +62,41 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ video, onWatch, onOpenDe
 
           {/* Botões de Ação */}
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={() => onWatch(video)}
-              className="min-h-[44px] px-6 py-2.5 rounded-xl bg-white text-slate-950 hover:bg-slate-200 active:bg-slate-300 font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-white/10 hover:scale-[1.02] cursor-pointer"
-            >
-              <Play className="w-4 h-4 fill-slate-950" />
-              <span>Assistir Agora</span>
-            </button>
+            {isAvailable ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onWatch(video);
+                }}
+                className="min-h-[44px] px-6 py-2.5 rounded-xl bg-white text-slate-950 hover:bg-slate-200 active:bg-slate-300 font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-white/10 hover:scale-[1.02] cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-slate-950" />
+                <span>Assistir Agora</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenDetails(video);
+                }}
+                className="min-h-[44px] px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-amber-500/20 hover:scale-[1.02] cursor-pointer"
+              >
+                <UploadCloud className="w-4 h-4 text-slate-950" />
+                <span>Reconectar Arquivo</span>
+              </button>
+            )}
 
             <button
-              onClick={() => onOpenDetails(video)}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenDetails(video);
+              }}
               className="min-h-[44px] px-5 py-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-200 font-semibold text-sm flex items-center gap-2 transition-all border border-slate-700/80 cursor-pointer"
             >
               <Info className="w-4 h-4 text-slate-400" />

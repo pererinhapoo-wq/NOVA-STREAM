@@ -13,10 +13,12 @@ import {
   RotateCcw,
   CheckCircle2,
   X,
+  AlertTriangle,
 } from 'lucide-react';
 import { VideoItem, VideoCategory } from '../../types/video';
 import { APP_CONFIG } from '../../config/appConfig';
 import { VideoCard } from '../common/VideoCard';
+import { hasLocalVideoFile } from '../../services/videoData';
 
 interface LibraryViewProps {
   videos: VideoItem[];
@@ -28,6 +30,7 @@ interface LibraryViewProps {
   onDeleteVideo: (id: string) => void;
   onNavigateToUpload: () => void;
   onResetDemoVideos: () => void;
+  onReconnectFile?: (videoId: string, file: File) => void;
 }
 
 type SortOption = 'date-desc' | 'date-asc' | 'title-asc' | 'duration-desc';
@@ -42,6 +45,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onDeleteVideo,
   onNavigateToUpload,
   onResetDemoVideos,
+  onReconnectFile: _onReconnectFile,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -123,15 +127,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={onNavigateToUpload}
-            className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+            className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
           >
             <UploadCloud className="w-4 h-4" />
             <span>Adicionar Vídeo</span>
           </button>
           <button
+            type="button"
             onClick={onResetDemoVideos}
-            className="px-3 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg transition-colors flex items-center gap-1.5"
+            className="px-3 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
             title="Restaurar vídeos de demonstração padrão"
           >
             <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
@@ -159,9 +165,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           </div>
           {onClearHighlight && (
             <button
+              type="button"
               onClick={onClearHighlight}
               aria-label="Dispensar aviso"
-              className="text-slate-400 hover:text-white p-1 rounded-md transition-colors shrink-0"
+              className="text-slate-400 hover:text-white p-1 rounded-md transition-colors shrink-0 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -183,8 +190,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           />
           {search && (
             <button
+              type="button"
               onClick={() => setSearch('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
               aria-label="Limpar busca"
             >
               <X className="w-3.5 h-3.5" />
@@ -212,9 +220,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           {/* Alternador Grade / Lista */}
           <div className="flex items-center bg-[#161822] border border-slate-800 rounded-xl p-1">
             <button
+              type="button"
               onClick={() => setViewMode('grid')}
               aria-label="Visualização em grade"
-              className={`p-1.5 rounded-lg transition-colors ${
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                 viewMode === 'grid'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-400 hover:text-white'
@@ -223,9 +232,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <Grid className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
               onClick={() => setViewMode('list')}
               aria-label="Visualização em lista"
-              className={`p-1.5 rounded-lg transition-colors ${
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                 viewMode === 'list'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-400 hover:text-white'
@@ -240,8 +250,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       {/* Abas de Categorias */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-2 scrollbar-none">
         <button
+          type="button"
           onClick={() => setSelectedCategory('all')}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
             selectedCategory === 'all'
               ? 'bg-indigo-600 text-white shadow-sm'
               : 'bg-[#161822] text-slate-300 hover:text-white hover:bg-slate-800'
@@ -253,9 +264,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           const count = videos.filter((v) => v.category === cat).length;
           return (
             <button
+              type="button"
               key={cat}
               onClick={() => setSelectedCategory(cat)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
                 selectedCategory === cat
                   ? 'bg-indigo-600 text-white shadow-sm'
                   : 'bg-[#161822] text-slate-300 hover:text-white hover:bg-slate-800'
@@ -283,11 +295,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           </p>
           {(search || selectedCategory !== 'all') && (
             <button
+              type="button"
               onClick={() => {
                 setSearch('');
                 setSelectedCategory('all');
               }}
-              className="text-xs text-indigo-400 hover:text-indigo-300 underline font-medium"
+              className="text-xs text-indigo-400 hover:text-indigo-300 underline font-medium cursor-pointer"
             >
               Limpar filtros
             </button>
@@ -325,24 +338,28 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 {/* Barra de Ações Rápidas Flutuante */}
                 <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover/actions:opacity-100 transition-opacity bg-black/80 rounded-lg p-1 backdrop-blur-sm z-10 border border-slate-800">
                   <button
+                    type="button"
                     onClick={(e) => {
+                      e.preventDefault();
                       e.stopPropagation();
                       onEditVideo(video);
                     }}
                     title="Editar metadados"
-                    className="p-1 hover:text-indigo-400 text-slate-300 transition-colors"
+                    className="p-1 hover:text-indigo-400 text-slate-300 transition-colors cursor-pointer"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
                   <button
+                    type="button"
                     onClick={(e) => {
+                      e.preventDefault();
                       e.stopPropagation();
                       if (confirm(`Remover "${video.title}" da biblioteca?`)) {
                         onDeleteVideo(video.id);
                       }
                     }}
                     title="Excluir vídeo"
-                    className="p-1 hover:text-red-400 text-slate-300 transition-colors"
+                    className="p-1 hover:text-red-400 text-slate-300 transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -356,11 +373,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         <div className="space-y-2 bg-[#12131A] rounded-2xl border border-slate-800/90 overflow-hidden divide-y divide-slate-800/80">
           {filteredVideos.map((video) => {
             const isHighlighted = highlightedVideoId === video.id;
+            const isAvailable = !video.isLocalFile || hasLocalVideoFile(video.id);
 
             return (
               <div
                 key={video.id}
-                onClick={() => onSelectVideo(video)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!isAvailable) {
+                    onOpenDetails(video);
+                    return;
+                  }
+                  onSelectVideo(video);
+                }}
                 className={`p-3 sm:p-4 hover:bg-slate-850 flex items-center justify-between gap-4 cursor-pointer group transition-colors ${
                   isHighlighted ? 'bg-indigo-950/30 border-l-4 border-l-indigo-500' : ''
                 }`}
@@ -375,7 +400,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       referrerPolicy="no-referrer"
                     />
                     <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors flex items-center justify-center">
-                      <Play className="w-6 h-6 text-white drop-shadow opacity-80 group-hover:opacity-100 fill-white/50" />
+                      {isAvailable ? (
+                        <Play className="w-6 h-6 text-white drop-shadow opacity-80 group-hover:opacity-100 fill-white/50" />
+                      ) : (
+                        <UploadCloud className="w-5 h-5 text-amber-400 drop-shadow opacity-90 group-hover:opacity-100" />
+                      )}
                     </div>
                     <span className="absolute bottom-1 right-1 text-[10px] font-mono text-white bg-black/80 px-1 rounded">
                       {video.durationFormatted}
@@ -388,6 +417,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       <span>{video.category}</span>
                       <span aria-hidden="true" className="text-slate-600">·</span>
                       <span className="text-slate-400">{video.resolution}</span>
+                      {video.isLocalFile && !isAvailable && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-600">·</span>
+                          <span className="text-amber-400 font-semibold flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 inline" /> Arquivo Pendente
+                          </span>
+                        </>
+                      )}
                       {isHighlighted && (
                         <>
                           <span aria-hidden="true" className="text-slate-600">·</span>
@@ -406,30 +443,74 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                 {/* Ações na Lista */}
                 <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex items-center gap-1.5 shrink-0"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  className="flex items-center gap-2 shrink-0"
                 >
+                  {isAvailable ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onSelectVideo(video);
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Assistir</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onOpenDetails(video);
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold text-amber-300 bg-amber-950/60 hover:bg-amber-900/80 border border-amber-600/50 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      <UploadCloud className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Reconectar</span>
+                    </button>
+                  )}
+
                   <button
-                    onClick={() => onOpenDetails(video)}
-                    className="px-2.5 py-1 text-xs text-slate-300 hover:text-white bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 transition-colors hidden md:block"
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onOpenDetails(video);
+                    }}
+                    className="px-2.5 py-1 text-xs text-slate-300 hover:text-white bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 transition-colors hidden md:block cursor-pointer"
                   >
                     Detalhes
                   </button>
                   <button
-                    onClick={() => onEditVideo(video)}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onEditVideo(video);
+                    }}
                     title="Editar metadados"
-                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => {
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
                       if (confirm(`Remover "${video.title}" da biblioteca?`)) {
                         onDeleteVideo(video.id);
                       }
                     }}
                     title="Excluir"
-                    className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors"
+                    className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
