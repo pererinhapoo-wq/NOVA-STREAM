@@ -121,6 +121,7 @@ export const VideoEditModal: React.FC<VideoEditModalProps> = ({ video, onClose, 
                 onChange={(e) => setResolution(e.target.value as VideoResolution)}
                 className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 transition-colors"
               >
+                <option value="N/D">N/D (Não Detectada / Pendente)</option>
                 <option value="4K">4K Ultra HD</option>
                 <option value="1080p">1080p Full HD</option>
                 <option value="720p">720p HD</option>

@@ -37,7 +37,9 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({ video, onWatch, onOpenDe
             <span aria-hidden="true" className="text-slate-600">·</span>
             <span>{video.category}</span>
             <span aria-hidden="true" className="text-slate-600">·</span>
-            <span className="font-mono text-slate-400">{video.durationFormatted}</span>
+            <span className="font-mono text-slate-400">
+              {video.duration > 0 ? video.durationFormatted : '--:--'}
+            </span>
             <span aria-hidden="true" className="text-slate-600">·</span>
             {isAvailable ? (
               <span className="text-emerald-400 font-medium flex items-center gap-1">

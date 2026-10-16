@@ -17,19 +17,27 @@ import {
   ShieldCheck,
   Check,
 } from 'lucide-react';
-import { VideoItem, QualityLevel, PlaybackSpeed } from '../../types/video';
-import { getLocalVideoUrl } from '../../services/videoData';
+import { VideoItem, QualityLevel, PlaybackSpeed, VideoResolution } from '../../types/video';
+import { getLocalVideoUrl, classifyVideoResolution, formatDuration } from '../../services/videoData';
+
+export interface VideoMetadataUpdates {
+  duration?: number;
+  durationFormatted?: string;
+  resolution?: VideoResolution;
+}
 
 interface CustomVideoPlayerProps {
   video: VideoItem;
   onClose: () => void;
   autoPlay?: boolean;
+  onUpdateMetadata?: (videoId: string, metadata: VideoMetadataUpdates) => void;
 }
 
 export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   video,
   onClose,
   autoPlay = true,
+  onUpdateMetadata,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -130,6 +138,30 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       setDuration(el.duration);
     }
     setVideoError(null);
+
+    // Propagação de metadados reais confirmados pelo player
+    if (onUpdateMetadata) {
+      const rawDur = el.duration;
+      const rawHeight = el.videoHeight;
+      const hasValidDuration =
+        typeof rawDur === 'number' && !isNaN(rawDur) && rawDur > 0 && isFinite(rawDur);
+      const detectedResolution = classifyVideoResolution(rawHeight);
+
+      const updates: VideoMetadataUpdates = {};
+
+      if (hasValidDuration) {
+        updates.duration = Math.round(rawDur);
+        updates.durationFormatted = formatDuration(rawDur);
+      }
+
+      if (detectedResolution !== 'N/D') {
+        updates.resolution = detectedResolution;
+      }
+
+      if (updates.duration !== undefined || updates.resolution !== undefined) {
+        onUpdateMetadata(video.id, updates);
+      }
+    }
   };
 
   // Clique na barra de progresso

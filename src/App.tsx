@@ -15,7 +15,7 @@ import { HomeView } from './components/home/HomeView';
 import { LibraryView } from './components/library/LibraryView';
 import { AdminUploadView } from './components/admin/AdminUploadView';
 import { ArchitectureView } from './components/architecture/ArchitectureView';
-import { CustomVideoPlayer } from './components/player/CustomVideoPlayer';
+import { CustomVideoPlayer, VideoMetadataUpdates } from './components/player/CustomVideoPlayer';
 import { VideoDetailsModal } from './components/common/VideoDetailsModal';
 import { VideoEditModal } from './components/library/VideoEditModal';
 
@@ -101,6 +101,77 @@ export default function App() {
     }
   }, []);
 
+  // Atualiza metadados reais de reprodução (duração e resolução detectadas no player)
+  const handleUpdateVideoMetadata = useCallback(
+    (videoId: string, metadata: VideoMetadataUpdates) => {
+      setVideos((prev) => {
+        let changed = false;
+        const next = prev.map((v) => {
+          if (v.id !== videoId) return v;
+
+          // Preserva metadados dos vídeos de demonstração inalterados
+          if (v.isDemo) return v;
+
+          const updated: VideoItem = { ...v };
+
+          // Atualiza duração se for válida e se o vídeo ainda estiver com duração não confirmada (0)
+          if (
+            typeof metadata.duration === 'number' &&
+            metadata.duration > 0 &&
+            isFinite(metadata.duration) &&
+            (v.duration === 0 || !v.duration)
+          ) {
+            updated.duration = metadata.duration;
+            updated.durationFormatted = metadata.durationFormatted || v.durationFormatted;
+            changed = true;
+          }
+
+          // Atualiza resolução se for válida ('4K' | '1080p' | '720p') e se o vídeo estiver como 'N/D'
+          if (
+            metadata.resolution &&
+            metadata.resolution !== 'N/D' &&
+            (v.resolution === 'N/D' || !v.resolution)
+          ) {
+            updated.resolution = metadata.resolution;
+            changed = true;
+          }
+
+          return updated;
+        });
+
+        if (changed) {
+          saveStoredVideos(next);
+          return next;
+        }
+        return prev;
+      });
+
+      // Mantém também o vídeo em reprodução sincronizado na visualização atual
+      setPlayingVideo((curr) => {
+        if (!curr || curr.id !== videoId || curr.isDemo) return curr;
+        const updated = { ...curr };
+        if (
+          typeof metadata.duration === 'number' &&
+          metadata.duration > 0 &&
+          isFinite(metadata.duration) &&
+          (curr.duration === 0 || !curr.duration)
+        ) {
+          updated.duration = metadata.duration;
+          updated.durationFormatted = metadata.durationFormatted || curr.durationFormatted;
+        }
+        if (
+          metadata.resolution &&
+          metadata.resolution !== 'N/D' &&
+          (curr.resolution === 'N/D' || !curr.resolution)
+        ) {
+          updated.resolution = metadata.resolution;
+        }
+        return updated;
+      });
+    },
+    []
+  );
+
   // Navegar para a biblioteca focando o vídeo recém-adicionado
   const handleNavigateToLibrary = useCallback((targetVideoId?: string) => {
     if (targetVideoId) {
@@ -165,6 +236,7 @@ export default function App() {
           <AdminUploadView
             onVideoCreated={handleVideoCreated}
             onNavigateToLibrary={handleNavigateToLibrary}
+            existingVideos={videos}
           />
         )}
 
@@ -188,6 +260,7 @@ export default function App() {
             video={playingVideo}
             onClose={handleClosePlayer}
             autoPlay={true}
+            onUpdateMetadata={handleUpdateVideoMetadata}
           />
         </div>
       )}

@@ -169,7 +169,9 @@ export const VideoDetailsModal: React.FC<VideoDetailsModalProps> = ({
               <span className="text-slate-400 block mb-1 flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5 text-indigo-400" /> Duração
               </span>
-              <span className="text-white font-mono font-medium">{video.durationFormatted}</span>
+              <span className="text-white font-mono font-medium">
+                {video.duration > 0 ? video.durationFormatted : '--:-- (Pendente)'}
+              </span>
             </div>
 
             <div className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800">

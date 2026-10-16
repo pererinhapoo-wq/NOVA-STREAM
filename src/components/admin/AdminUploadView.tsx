@@ -36,7 +36,17 @@ import {
 } from 'lucide-react';
 import { VideoItem, VideoCategory, VideoResolution, VideoUploadStatus } from '../../types/video';
 import { APP_CONFIG } from '../../config/appConfig';
-import { registerLocalVideoFile } from '../../services/videoData';
+import { registerLocalVideoFile, getStoredVideos } from '../../services/videoData';
+import {
+  buildImportCandidates,
+  generateUniqueEpisodeId,
+  normalizeUrlForComparison,
+  ImportCandidateAnalysis,
+  QueueItemStatus,
+  NetworkValidationStatus,
+  NetworkValidationDetail,
+  PreparedQueueItem,
+} from '../../services/importEpisodes';
 
 // Capas pré-selecionadas de alta qualidade disponíveis para o usuário escolher
 import thumbTech from '../../assets/images/video_thumb_tech_1791958055319.jpg';
@@ -44,52 +54,20 @@ import thumbNature from '../../assets/images/video_thumb_nature_1791958055994.jp
 import thumbWorkshop from '../../assets/images/video_thumb_workshop_1791958055237.jpg';
 import heroPoster from '../../assets/images/hero_streaming_poster_1791958055087.jpg';
 
-interface AdminUploadViewProps {
+export interface AdminUploadViewProps {
   onVideoCreated: (newVideo: VideoItem) => boolean;
   onNavigateToLibrary: (videoId?: string) => void;
+  existingVideos?: VideoItem[];
 }
+
+export type {
+  QueueItemStatus,
+  NetworkValidationStatus,
+  NetworkValidationDetail,
+  PreparedQueueItem,
+};
 
 type UploadTab = 'file' | 'url_seasons' | 'cloud';
-
-export type QueueItemStatus = 'pendente' | 'invalida' | 'duplicada';
-
-export type NetworkValidationStatus =
-  | 'nao_iniciada'
-  | 'validando'
-  | 'midia_compativel'
-  | 'servidor_conectado'
-  | 'acesso_negado_ou_expirado'
-  | 'bloqueado_ssrf'
-  | 'erro_rede'
-  | 'inconclusivo';
-
-export interface NetworkValidationDetail {
-  httpStatus?: number;
-  httpStatusText?: string;
-  contentType?: string;
-  contentLength?: number;
-  isMediaCompatible: boolean;
-  mediaTypeDetected?: string;
-  supportsRangeRequests: boolean;
-  timingMs: number;
-  truncated?: boolean;
-  diagnosticLevel: string;
-  diagnosticMessage: string;
-}
-
-export interface PreparedQueueItem {
-  episodeNumber: number;
-  originalLineNumber: number;
-  rawUrl: string;
-  sanitizedUrl: string;
-  status: QueueItemStatus;
-  statusMessage: string;
-  seriesTitle: string;
-  seasonNumber: number;
-  networkStatus?: NetworkValidationStatus;
-  networkResult?: NetworkValidationDetail;
-  networkError?: string;
-}
 
 export interface BatchSummary {
   totalEpisodes: number;
@@ -123,9 +101,19 @@ export function formatBytes(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+export interface ImportSummaryNotice {
+  timestamp: number;
+  importedCount: number;
+  catalogDuplicatesCount: number;
+  ineligibleCount: number;
+  firstImportedId?: string;
+  ignoredDetails?: { label: string; reason: string }[];
+}
+
 export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
   onVideoCreated,
   onNavigateToLibrary,
+  existingVideos,
 }) => {
   // Controle de abas da área de envio
   const [activeUploadTab, setActiveUploadTab] = useState<UploadTab>('file');
@@ -145,6 +133,10 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     total: 0,
   });
   const [cancellationNotice, setCancellationNotice] = useState<string | null>(null);
+
+  // Estados de controle da importação para o catálogo
+  const [importFeedback, setImportFeedback] = useState<ImportSummaryNotice | null>(null);
+  const [isImporting, setIsImporting] = useState<boolean>(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isMountedRef = useRef<boolean>(true);
@@ -280,6 +272,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       isQueueRunningRef.current = false;
     }
     setCancellationNotice(null);
+    setImportFeedback(null);
 
     const lines = rawUrlsText.split('\n');
     const validLinesWithIndex: { originalLineNumber: number; rawUrl: string }[] = [];
@@ -364,6 +357,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     }
     setPreparedBatch(null);
     setCancellationNotice(null);
+    setImportFeedback(null);
     setExpandedDiagnostics({});
   };
 
@@ -381,6 +375,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     setRawUrlsText(sampleUrls);
     setPreparedBatch(null);
     setCancellationNotice(null);
+    setImportFeedback(null);
   };
 
   const handleClearUrls = () => {
@@ -388,6 +383,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     setRawUrlsText('');
     setPreparedBatch(null);
     setCancellationNotice(null);
+    setImportFeedback(null);
   };
 
   // Motor central de validação de rede: concorrência máxima de 2 requisições simultâneas
@@ -623,6 +619,98 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       executeBatchValidation(targetIndices);
     }
   }, [preparedBatch, isValidating, executeBatchValidation]);
+
+  // Resumo de candidatos para importação ao catálogo e detecção de duplicatas
+  const catalogForDuplicateCheck = useMemo(() => {
+    return existingVideos || getStoredVideos();
+  }, [existingVideos]);
+
+  const importCandidatesAnalysis = useMemo(() => {
+    if (!preparedBatch || preparedBatch.length === 0) return null;
+    return buildImportCandidates(preparedBatch, catalogForDuplicateCheck, {
+      seriesTitle,
+      seasonNumber,
+      category: 'Treinamentos & Tutoriais',
+      posterUrl: thumbWorkshop,
+    });
+  }, [preparedBatch, catalogForDuplicateCheck, seriesTitle, seasonNumber]);
+
+  const eligibleToImportCount = importCandidatesAnalysis?.eligibleToImport.length ?? 0;
+
+  // Callback de importação controlada dos episódios validados
+  const handleImportValidatedEpisodes = useCallback(() => {
+    if (!preparedBatch || preparedBatch.length === 0 || isImporting) return;
+
+    const currentCatalog = existingVideos || getStoredVideos();
+    const analysis = buildImportCandidates(preparedBatch, currentCatalog, {
+      seriesTitle,
+      seasonNumber,
+      category: 'Treinamentos & Tutoriais',
+      posterUrl: thumbWorkshop,
+    });
+
+    if (analysis.eligibleToImport.length === 0) {
+      setImportFeedback({
+        timestamp: Date.now(),
+        importedCount: 0,
+        catalogDuplicatesCount: analysis.ignoredCatalogDuplicates.length,
+        ineligibleCount: analysis.ignoredIneligible.length,
+        ignoredDetails: [
+          ...analysis.ignoredCatalogDuplicates.map((d) => ({
+            label: `EP ${String(d.episodeNumber).padStart(2, '0')}`,
+            reason: d.reason,
+          })),
+          ...analysis.ignoredIneligible.map((d) => ({
+            label: `EP ${String(d.episodeNumber).padStart(2, '0')}`,
+            reason: d.reason,
+          })),
+        ],
+      });
+      return;
+    }
+
+    setIsImporting(true);
+
+    let successCount = 0;
+    let firstId: string | undefined = undefined;
+
+    // Executa a inserção sequencial utilizando o callback onVideoCreated oficial do sistema
+    for (let i = 0; i < analysis.eligibleToImport.length; i++) {
+      const video = analysis.eligibleToImport[i];
+      const success = onVideoCreated(video);
+      if (success) {
+        if (!firstId) firstId = video.id;
+        successCount++;
+      }
+    }
+
+    setIsImporting(false);
+
+    setImportFeedback({
+      timestamp: Date.now(),
+      importedCount: successCount,
+      catalogDuplicatesCount: analysis.ignoredCatalogDuplicates.length,
+      ineligibleCount: analysis.ignoredIneligible.length,
+      firstImportedId: firstId,
+      ignoredDetails: [
+        ...analysis.ignoredCatalogDuplicates.map((d) => ({
+          label: `EP ${String(d.episodeNumber).padStart(2, '0')}`,
+          reason: d.reason,
+        })),
+        ...analysis.ignoredIneligible.map((d) => ({
+          label: `EP ${String(d.episodeNumber).padStart(2, '0')}`,
+          reason: d.reason,
+        })),
+      ],
+    });
+  }, [
+    preparedBatch,
+    isImporting,
+    existingVideos,
+    seriesTitle,
+    seasonNumber,
+    onVideoCreated,
+  ]);
 
   // Formulário de Arquivo Local
   const [title, setTitle] = useState('');
@@ -1448,6 +1536,45 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                           <span>Revalidar Tudo</span>
                         </button>
                       )}
+
+                      {/* Botão de Importação de Episódios Validados */}
+                      <button
+                        type="button"
+                        onClick={handleImportValidatedEpisodes}
+                        disabled={isValidating || isImporting || eligibleToImportCount === 0}
+                        title={
+                          eligibleToImportCount > 0
+                            ? `Importar ${eligibleToImportCount} ${
+                                eligibleToImportCount === 1
+                                  ? 'episódio validado'
+                                  : 'episódios validados'
+                              } para o catálogo`
+                            : 'Nenhum episódio com mídia compatível validada disponível para importação'
+                        }
+                        className={`px-4 py-2 text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shadow cursor-pointer ${
+                          eligibleToImportCount > 0 && !isValidating
+                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40 active:scale-98'
+                            : 'bg-slate-800 text-slate-500 border border-slate-700/50 cursor-not-allowed opacity-60'
+                        }`}
+                      >
+                        {isImporting ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-emerald-300" />
+                        ) : (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-300" />
+                        )}
+                        <span>
+                          {isImporting ? 'Importando...' : 'Importar episódios validados'}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                            eligibleToImportCount > 0 && !isValidating
+                              ? 'bg-emerald-950 border border-emerald-400 text-emerald-200'
+                              : 'bg-slate-900 text-slate-400'
+                          }`}
+                        >
+                          {eligibleToImportCount}
+                        </span>
+                      </button>
                     </div>
 
                     <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5">
@@ -1455,6 +1582,109 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       <span>Concorrência máx: 2 requisições</span>
                     </div>
                   </div>
+
+                  {/* Feedback Detalhado Pós-Importação */}
+                  {importFeedback && (
+                    <div
+                      className={`p-4 rounded-xl border space-y-3 animate-in fade-in duration-200 ${
+                        importFeedback.importedCount > 0
+                          ? 'bg-emerald-950/30 border-emerald-600/60 text-emerald-100'
+                          : 'bg-amber-950/30 border-amber-600/60 text-amber-100'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/60">
+                        <div className="flex items-center gap-2 font-semibold text-xs">
+                          {importFeedback.importedCount > 0 ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : (
+                            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                          )}
+                          <span className="text-white text-sm">
+                            {importFeedback.importedCount > 0
+                              ? `${importFeedback.importedCount} ${
+                                  importFeedback.importedCount === 1 ? 'episódio importado' : 'episódios importados'
+                                } com sucesso!`
+                              : 'Nenhum episódio elegível para importação'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {importFeedback.importedCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigateToLibrary(importFeedback.firstImportedId)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Ir para a Biblioteca & Assistir</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setImportFeedback(null)}
+                            className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                            title="Fechar aviso de importação"
+                          >
+                            <XCircle className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-xs space-y-1.5">
+                        <p className="text-slate-300 leading-relaxed">
+                          {importFeedback.importedCount > 0 ? (
+                            <>
+                              Os episódios foram adicionados à sua biblioteca com título da obra, numeração sequencial e URLs completas preservadas.
+                            </>
+                          ) : (
+                            <>
+                              Nenhum item preencheu os critérios estritos de importação (mídia compatível na rede e sem duplicidade no catálogo).
+                            </>
+                          )}
+                        </p>
+
+                        {/* Nota de transparência sobre teste no player */}
+                        {importFeedback.importedCount > 0 && (
+                          <div className="p-2.5 rounded-lg bg-black/40 border border-slate-800/80 text-[11px] text-slate-300 flex items-start gap-2">
+                            <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                            <div>
+                              <strong className="text-white">Teste de Decodificação Necessário:</strong> A validação de rede atesta resposta HTTP positiva e cabeçalhos de streaming (Content-Type/Range). A reprodução efetiva depende do suporte do seu navegador aos codecs internos da mídia (ex.: H.264/AAC), que será confirmada ao abrir o vídeo no player.
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Detalhes de itens ignorados caso existam */}
+                        {(importFeedback.catalogDuplicatesCount > 0 || importFeedback.ineligibleCount > 0) && (
+                          <div className="text-[11px] space-y-1 pt-1 text-slate-300">
+                            {importFeedback.catalogDuplicatesCount > 0 && (
+                              <p className="flex items-center gap-1.5 text-amber-300">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                <span>
+                                  <strong>{importFeedback.catalogDuplicatesCount}</strong>{' '}
+                                  {importFeedback.catalogDuplicatesCount === 1
+                                    ? 'episódio ignorado'
+                                    : 'episódios ignorados'}{' '}
+                                  por já constar no catálogo existente.
+                                </span>
+                              </p>
+                            )}
+                            {importFeedback.ineligibleCount > 0 && (
+                              <p className="flex items-center gap-1.5 text-slate-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                                <span>
+                                  <strong>{importFeedback.ineligibleCount}</strong>{' '}
+                                  {importFeedback.ineligibleCount === 1
+                                    ? 'item ignorado'
+                                    : 'itens ignorados'}{' '}
+                                  por não possuir mídia compatível validada na rede (ex.: não validado, acesso negado, SSRF ou erro de rede).
+                                </span>
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Aviso de Cancelamento */}
                   {cancellationNotice && (
@@ -1639,7 +1869,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                                   EP {epNumberStr}
                                 </span>
                                 <span className="font-semibold text-white text-xs">
-                                  {item.seriesTitle ? `${item.seriesTitle} • ` : ''}T{item.seasonNumber}E{epNumberStr}
+                                  {item.seriesTitle ? `${item.seriesTitle} • ` : ''}T{String(item.seasonNumber).padStart(2, '0')}E{epNumberStr}
                                 </span>
                               </div>
 
@@ -2121,7 +2351,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                                 EP {epNumberStr}
                               </span>
                               <span className="font-semibold text-slate-200 text-xs">
-                                {seriesTitle.trim() || 'Obra Sem Título'} • T{seasonNumber}E{epNumberStr}
+                                {seriesTitle.trim() || 'Obra Sem Título'} • T{String(seasonNumber).padStart(2, '0')}E{epNumberStr}
                               </span>
                             </div>
                             <div className="font-mono text-[11px] text-slate-400 truncate max-w-full sm:max-w-[320px] bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800/60">

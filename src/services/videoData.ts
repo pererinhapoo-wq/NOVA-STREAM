@@ -1,4 +1,4 @@
-import { VideoItem } from '../types/video';
+import { VideoItem, VideoResolution } from '../types/video';
 
 // Imagens geradas localmente para visual de alta fidelidade
 import heroPoster from '../assets/images/hero_streaming_poster_1791958055087.jpg';
@@ -265,3 +265,4 @@ export const resetStoredVideos = (): VideoItem[] => {
   }
   return inMemoryVideosCache;
 };
+export { classifyVideoResolution, formatDuration } from './videoMetadata';

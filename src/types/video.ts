@@ -4,7 +4,7 @@ export type VideoCategory =
   | 'Apresentações Privadas'
   | 'Documentários & Demos';
 
-export type VideoResolution = '4K' | '1080p' | '720p' | '480p';
+export type VideoResolution = '4K' | '1080p' | '720p' | '480p' | 'N/D';
 
 export type VideoUploadStatus = 'aguardando' | 'enviando' | 'processando' | 'pronto' | 'erro';
 

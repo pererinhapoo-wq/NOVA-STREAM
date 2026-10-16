@@ -79,7 +79,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         {/* Duração no canto inferior direito */}
         <div className="absolute bottom-2.5 right-2.5 text-[11px] font-mono font-medium text-white bg-black/80 px-2 py-0.5 rounded flex items-center gap-1 border border-slate-700/50">
           <Clock className="w-3 h-3 text-slate-400" />
-          <span>{video.durationFormatted}</span>
+          <span>{video.duration > 0 ? video.durationFormatted : '--:--'}</span>
         </div>
 
         {/* Ícone de Play central ou Ação de Reconexão no hover/touch */}

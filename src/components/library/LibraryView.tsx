@@ -407,7 +407,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       )}
                     </div>
                     <span className="absolute bottom-1 right-1 text-[10px] font-mono text-white bg-black/80 px-1 rounded">
-                      {video.durationFormatted}
+                      {video.duration > 0 ? video.durationFormatted : '--:--'}
                     </span>
                   </div>
 
