@@ -40,6 +40,15 @@ export interface VideoItem {
 
 export type PlaybackSpeed = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2;
 
-export type QualityLevel = 'original' | 'auto' | '1080p' | '720p' | '480p' | '360p';
+export type QualityLevel = 'original' | 'auto' | '1080p' | '720p' | '480p' | '360p' | '240p';
+
+export interface StreamQualityOption {
+  levelIndex: number; // -1 for auto
+  label: string; // "Automático (ABR)", "1080p", "720p", etc.
+  resolution: string;
+  bitrate?: number;
+  width?: number;
+  height?: number;
+}
 
 export type ActiveTab = 'home' | 'library' | 'admin' | 'security';

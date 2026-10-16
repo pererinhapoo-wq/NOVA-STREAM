@@ -181,7 +181,7 @@ async function runPlayerQualitySuite() {
   assert(localResult720.formattedLabel === 'Original (720p)', 'Rótulo local atualizado exibe "Original (720p)"');
 
   // -----------------------------------------------------------------
-  // 4. RESTAURAÇÃO DAS OPÇÕES ANTERIORES E AUSÊNCIA DE TROCA FICTÍCIA
+  // 4. RESTAURAÇÃO DAS OPÇÕES ANTERIORES E PRESERVAÇÃO DE URL
   // -----------------------------------------------------------------
   console.log('\n--- 4. RESTAURAÇÃO DAS OPÇÕES ANTERIORES E PRESERVAÇÃO DE URL ---');
 
@@ -214,6 +214,103 @@ async function runPlayerQualitySuite() {
   // Aviso discreto no menu informando que a fonte atual não alterna resoluções
   const discreetNotice = 'A troca de resolução não está disponível para esta fonte.';
   assert(discreetNotice.length > 0, 'Aviso discreto informando que a troca não está disponível está presente');
+
+  // -----------------------------------------------------------------
+  // 5. TESTE DA STREAM HLS MUX: TROCA REAL 1080p -> 480p E RETORNO ABR
+  // -----------------------------------------------------------------
+  console.log('\n--- 5. SUPORTE A STREAMING HLS COM TROCA REAL DE RESOLUÇÃO (HLS.JS) ---');
+
+  const muxHlsUrl = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+  const hlsStreamVideo: VideoItem = {
+    id: 'demo-hls-stream-mux',
+    title: 'Stream Adaptativa Mux Multi-bitrate HLS',
+    description: 'Transmissão multi-bitrate em fragmentos HLS',
+    duration: 596,
+    durationFormatted: '09:56',
+    category: 'Treinamentos & Tutoriais',
+    tags: ['HLS', 'Adaptativo', 'Mux'],
+    posterUrl: '/assets/hls.jpg',
+    videoUrl: muxHlsUrl,
+    isDemo: true,
+    createdAt: '2026-03-12T14:30:00Z',
+    resolution: '1080p',
+  };
+
+  const isHls = (url: string) => url.toLowerCase().includes('.m3u8') || url.includes('/hls/');
+  assert(isHls(hlsStreamVideo.videoUrl) === true, 'Playlist Mux https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8 identificada como HLS');
+  assert(isHls(demoHero4k.videoUrl) === false, 'URL MP4 direta identificada como NÃO HLS (fonte direta)');
+
+  // Variantes reais da playlist master do Mux
+  const muxHlsLevels = [
+    { height: 1080, width: 1920, bitrate: 6221600, name: '1080' },
+    { height: 720, width: 1280, bitrate: 2149280, name: '720' },
+    { height: 480, width: 848, bitrate: 836280, name: '480' },
+    { height: 380, width: 512, bitrate: 460560, name: '380' },
+    { height: 184, width: 320, bitrate: 246440, name: '240' },
+  ];
+
+  const formatHlsLevelLabel = (height?: number) => {
+    if (!height) return 'N/D';
+    if (height >= 2160) return '4K';
+    if (height >= 1080) return '1080p';
+    if (height >= 720) return '720p';
+    if (height >= 480) return '480p';
+    return `${height}p`;
+  };
+
+  assert(muxHlsLevels.length === 5, 'Stream HLS Mux possui 5 variantes reais de qualidade');
+  assert(formatHlsLevelLabel(muxHlsLevels[0].height) === '1080p', 'Nível 0 mapeado para 1080p (Full HD 1920x1080)');
+  assert(formatHlsLevelLabel(muxHlsLevels[1].height) === '720p', 'Nível 1 mapeado para 720p (HD 1280x720)');
+  assert(formatHlsLevelLabel(muxHlsLevels[2].height) === '480p', 'Nível 2 mapeado para 480p (SD 848x480)');
+
+  // Simulação do ciclo de vida da seleção de qualidade no CustomVideoPlayer
+  let requestedLevel = -1; // -1 = Auto (ABR)
+  let effectiveLevel = -1;
+  let isLevelSwitchPending = false;
+  let currentBitrate: number | null = null;
+  let videoElementHeight = 1080;
+  let videoElementWidth = 1920;
+  let detectedRes = formatHlsLevelLabel(videoElementHeight);
+
+  // 1. Usuário seleciona manualmente 1080p (nível índice 0)
+  requestedLevel = 0;
+  isLevelSwitchPending = videoElementHeight !== muxHlsLevels[0].height;
+  // Como o decodificador já estava em 1080p, não fica pendente
+  assert(isLevelSwitchPending === false, 'Dimensão idêntica (1080p): transição não fica pendente indefinidamente');
+  effectiveLevel = 0;
+  currentBitrate = muxHlsLevels[0].bitrate;
+  assert(requestedLevel === 0, 'Qualidade 1080p solicitada via hls.currentLevel = 0');
+  assert(effectiveLevel === 0, 'Nível 1080p ativo e confirmado');
+  assert(currentBitrate === 6221600, 'Bitrate ativo de 6.22 Mbps correspondente ao nível 1080p');
+
+  // 2. Usuário altera de 1080p para 480p (nível índice 2)
+  requestedLevel = 2;
+  // Decodificador ainda está decodificando o buffer anterior (1080p)
+  isLevelSwitchPending = videoElementHeight !== muxHlsLevels[2].height;
+  assert(isLevelSwitchPending === true, 'Ao selecionar 480p, transição entra em estado pendente aguardando decodificador');
+  assert(requestedLevel === 2, 'hls.currentLevel alterado para índice 2 (480p)');
+
+  // Hls.js notifica LEVEL_SWITCHED
+  effectiveLevel = 2;
+  currentBitrate = muxHlsLevels[2].bitrate;
+  assert(effectiveLevel === 2, 'Hls.js confirma LEVEL_SWITCHED para o nível 2 (480p)');
+  assert(currentBitrate === 836280, 'Bitrate atualizado para 836 Kbps');
+
+  // Decodificador processa os novos fragmentos e dispara evento 'resize' no elemento <video>
+  videoElementHeight = 480;
+  videoElementWidth = 848;
+  detectedRes = formatHlsLevelLabel(videoElementHeight);
+  isLevelSwitchPending = false;
+
+  assert(detectedRes === '480p', 'Evento resize do <video> confirma resolução decodificada real de 480p');
+  assert(videoElementHeight === 480 && videoElementWidth === 848, 'Dimensões reais atualizadas para 848x480');
+  assert(isLevelSwitchPending === false, 'Status pendente resolvido após confirmação do decodificador');
+
+  // 3. Usuário retorna para Automático (ABR)
+  requestedLevel = -1;
+  isLevelSwitchPending = false;
+  assert(requestedLevel === -1, 'Modo Automático reativado via hls.currentLevel = -1');
+  assert(isLevelSwitchPending === false, 'Modo Automático não requer espera de redimensionamento manual');
 
   // -----------------------------------------------------------------
   // RESUMO

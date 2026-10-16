@@ -17,9 +17,9 @@ export const INITIAL_DEMO_VIDEOS: VideoItem[] = [
     category: 'Treinamentos & Tutoriais',
     tags: ['Arquitetura', 'Segurança', 'Streaming Privado', 'HLS'],
     posterUrl: heroPoster,
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    videoUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
     isDemo: true,
-    demoNotice: 'Vídeo de demonstração técnica autorizada (Open Project)',
+    demoNotice: 'Stream HLS adaptativa multi-bitrate com troca real (1080p, 720p, 480p, 360p)',
     createdAt: '2026-03-12T14:30:00Z',
     resolution: '4K',
     fileSizeBytes: 420000000,
@@ -43,7 +43,7 @@ export const INITIAL_DEMO_VIDEOS: VideoItem[] = [
     posterUrl: thumbTech,
     videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     isDemo: true,
-    demoNotice: 'Demonstração de apresentação restrita para testes de layout',
+    demoNotice: 'Demonstração de apresentação restrita para testes de layout (Fonte Direta MP4)',
     createdAt: '2026-03-10T09:15:00Z',
     resolution: '1080p',
     fileSizeBytes: 290000000,
@@ -60,11 +60,11 @@ export const INITIAL_DEMO_VIDEOS: VideoItem[] = [
     duration: 380,
     durationFormatted: '06:20',
     category: 'Documentários & Demos',
-    tags: ['Calibração', 'Qualidade Visual', 'HDR', 'Compressão'],
+    tags: ['Calibração', 'Qualidade Visual', 'HDR', 'Compressão', 'HLS'],
     posterUrl: thumbNature,
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    videoUrl: 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8',
     isDemo: true,
-    demoNotice: 'Demonstração de material de teste audiovisual autorizado',
+    demoNotice: 'Stream HLS adaptativa multi-bitrate Tears of Steel (Unified Streaming)',
     createdAt: '2026-03-08T18:00:00Z',
     resolution: '4K',
     fileSizeBytes: 180000000,
@@ -84,7 +84,7 @@ export const INITIAL_DEMO_VIDEOS: VideoItem[] = [
     posterUrl: thumbWorkshop,
     videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
     isDemo: true,
-    demoNotice: 'Demonstração interna autorizada para validação do player',
+    demoNotice: 'Demonstração interna autorizada para validação do player (Fonte Direta MP4)',
     createdAt: '2026-03-04T11:20:00Z',
     resolution: '1080p',
     fileSizeBytes: 340000000,
@@ -94,7 +94,7 @@ export const INITIAL_DEMO_VIDEOS: VideoItem[] = [
   },
 ];
 
-const STORAGE_KEY = 'novastream_videos_v1';
+const STORAGE_KEY = 'novastream_videos_v2';
 
 // Registro de arquivos locais mantidos na sessão em memória
 interface LocalFileEntry {
