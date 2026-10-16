@@ -35,3 +35,14 @@ export function formatDuration(seconds?: number): string {
   }
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+/**
+ * Retorna o rótulo amigável e honesto da qualidade para fontes diretas e arquivos locais.
+ * Exemplo: 'Original (1080p)', 'Original (4K)', 'Original (N/D)'.
+ */
+export function formatQualityLabel(resolution?: VideoResolution): string {
+  if (!resolution || resolution === 'N/D') {
+    return 'Original (N/D)';
+  }
+  return `Original (${resolution})`;
+}

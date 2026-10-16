@@ -18,7 +18,7 @@ import {
   Check,
 } from 'lucide-react';
 import { VideoItem, QualityLevel, PlaybackSpeed, VideoResolution } from '../../types/video';
-import { getLocalVideoUrl, classifyVideoResolution, formatDuration } from '../../services/videoData';
+import { getLocalVideoUrl, classifyVideoResolution, formatDuration, formatQualityLabel } from '../../services/videoData';
 
 export interface VideoMetadataUpdates {
   duration?: number;
@@ -59,6 +59,28 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(1);
   const [selectedQuality, setSelectedQuality] = useState<QualityLevel>('auto');
   const [activeSubtitle, setActiveSubtitle] = useState<string>('pt');
+
+  // Resolução e dimensões detectadas em tempo de execução
+  const [detectedResolution, setDetectedResolution] = useState<VideoResolution>(
+    video.resolution || 'N/D'
+  );
+  const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  // Sincronizar resolução inicial e limpar dimensões ao alternar de vídeo
+  useEffect(() => {
+    setDetectedResolution(video.resolution || 'N/D');
+    setVideoDimensions(null);
+  }, [video.id, video.resolution]);
+
+  // Resolução efetiva para exibição honesta
+  const displayResolution: VideoResolution =
+    detectedResolution !== 'N/D'
+      ? detectedResolution
+      : video.resolution && video.resolution !== 'N/D'
+        ? video.resolution
+        : 'N/D';
+
+  const resolutionFormattedLabel = formatQualityLabel(displayResolution);
 
   // Controles de visibilidade da interface
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -139,13 +161,23 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     }
     setVideoError(null);
 
+    const rawDur = el.duration;
+    const rawHeight = el.videoHeight;
+    const rawWidth = el.videoWidth;
+
+    if (rawWidth > 0 && rawHeight > 0) {
+      setVideoDimensions({ width: rawWidth, height: rawHeight });
+    }
+
+    const detected = classifyVideoResolution(rawHeight);
+    if (detected !== 'N/D') {
+      setDetectedResolution(detected);
+    }
+
     // Propagação de metadados reais confirmados pelo player
     if (onUpdateMetadata) {
-      const rawDur = el.duration;
-      const rawHeight = el.videoHeight;
       const hasValidDuration =
         typeof rawDur === 'number' && !isNaN(rawDur) && rawDur > 0 && isFinite(rawDur);
-      const detectedResolution = classifyVideoResolution(rawHeight);
 
       const updates: VideoMetadataUpdates = {};
 
@@ -154,8 +186,8 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         updates.durationFormatted = formatDuration(rawDur);
       }
 
-      if (detectedResolution !== 'N/D') {
-        updates.resolution = detectedResolution;
+      if (detected !== 'N/D') {
+        updates.resolution = detected;
       }
 
       if (updates.duration !== undefined || updates.resolution !== undefined) {
@@ -243,11 +275,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Alterar qualidade (preparada para HLS)
+  // Alterar seleção visual de qualidade (sem alterar a URL de reprodução da fonte direta)
   const changeQuality = (q: QualityLevel) => {
     setSelectedQuality(q);
     setShowSettingsMenu(false);
-    // Em produção HLS, chamará hls.currentLevel = levelIndex
   };
 
   // Teclado
@@ -373,9 +404,13 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       {activeSubtitle !== 'none' && isPlaying && currentTime > 2 && currentTime < duration - 2 && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-none px-4 py-1.5 bg-black/75 rounded text-center max-w-lg z-20">
           <p className="text-sm md:text-base font-medium text-white drop-shadow">
-            {activeSubtitle === 'pt'
-              ? 'Transmissão autorizada · Segmentos HLS criptografados via token efêmero.'
-              : 'Authorized private stream · HLS segmented with ephemeral token verification.'}
+            {video.isLocalFile
+              ? (activeSubtitle === 'pt'
+                  ? 'Reprodução de arquivo local · Decodificação direta no navegador.'
+                  : 'Local file playback · Direct in-browser decoding.')
+              : (activeSubtitle === 'pt'
+                  ? 'Transmissão autorizada · Reprodução contínua de fonte direta.'
+                  : 'Authorized transmission · Direct source continuous playback.')}
           </p>
         </div>
       )}
@@ -411,10 +446,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Botão de Informações Técnicas e Segurança */}
+          {/* Botão de Informações Técnicas */}
           <button
             onClick={() => setShowTechInfo(!showTechInfo)}
-            aria-label="Informações de transmissão"
+            aria-label="Informações técnicas de reprodução"
             className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border ${
               showTechInfo
                 ? 'bg-indigo-600 text-white border-indigo-500'
@@ -423,19 +458,19 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
           >
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
             <span className="hidden sm:inline">
-              {video.isLocalFile ? 'Arquivo & Decodificação' : 'Segurança & Codec'}
+              {video.isLocalFile ? 'Arquivo & Decodificação' : 'Informações Técnicas'}
             </span>
           </button>
         </div>
       </div>
 
-      {/* Painel Flutuante de Informações de Segurança e Codec */}
+      {/* Painel Flutuante de Informações Técnicas e Codec */}
       {showTechInfo && (
-        <div className="absolute top-16 right-4 sm:right-6 w-80 max-w-[calc(100vw-2rem)] bg-[#12131A] border border-slate-800 rounded-xl p-4 text-xs text-slate-300 shadow-2xl z-40 backdrop-blur-md">
+        <div className="absolute top-16 right-4 sm:right-6 w-84 max-w-[calc(100vw-2rem)] bg-[#12131A] border border-slate-800 rounded-xl p-4 text-xs text-slate-300 shadow-2xl z-40 backdrop-blur-md">
           <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-800">
             <span className="font-semibold text-white flex items-center gap-1.5">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              {video.isLocalFile ? 'Arquivo Local da Sessão' : 'Detalhes da Transmissão Privada'}
+              {video.isLocalFile ? 'Arquivo Local da Sessão' : 'Informações Técnicas da Transmissão'}
             </span>
             <button
               onClick={() => setShowTechInfo(false)}
@@ -448,28 +483,41 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             <div className="flex justify-between">
               <span className="text-slate-400">Modo de Acesso:</span>
               <span className="text-emerald-400 font-medium">
-                {video.isLocalFile ? 'Reprodução Local (Navegador)' : 'Privado (Sessão Segura)'}
+                {video.isLocalFile ? 'Reprodução Local (Navegador)' : 'Transmissão Remota Direta'}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Origem:</span>
+              <span className="text-slate-400">Origem da Fonte:</span>
               <span className="text-slate-200">
-                {video.isLocalFile ? 'Dispositivo Local (blob URL)' : 'HLS (.m3u8) / Chunked TS'}
+                {video.isLocalFile ? 'Arquivo Local (Blob URL)' : 'URL Remota Direta (HTTP/HTTPS)'}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Resolução:</span>
-              <span className="text-indigo-400 font-mono">{selectedQuality.toUpperCase()}</span>
+              <span className="text-slate-400">Resolução Real:</span>
+              <span className="text-indigo-400 font-mono">
+                {displayResolution !== 'N/D'
+                  ? `${displayResolution}${videoDimensions ? ` (${videoDimensions.width}x${videoDimensions.height})` : ''}`
+                  : 'N/D (em detecção)'}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Decodificação:</span>
               <span className="text-slate-200">Nativa HTML5 Media Pipeline</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Duração:</span>
+              <span className="text-slate-200 font-mono">{formatTime(duration)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Alternância de Resolução:</span>
+              <span className="text-slate-300">Não disponível (fonte única)</span>
+            </div>
             <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-              {video.demoNotice ||
-                (video.isLocalFile
-                  ? 'Arquivo de vídeo local carregado para reprodução direta no navegador durante esta sessão.'
-                  : 'Vídeo de demonstração técnica autorizado para teste de layout.')}
+              {video.isLocalFile
+                ? 'Arquivo de vídeo local carregado para reprodução direta no navegador durante esta sessão.'
+                : (video.demoNotice
+                    ? `${video.demoNotice} · Transmissão direta progressiva.`
+                    : 'Vídeo transmitido diretamente da URL de origem em fluxo contínuo.')}
             </div>
           </div>
         </div>
@@ -705,7 +753,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
               )}
             </div>
 
-            {/* Menu de Qualidade (HLS Ready) */}
+            {/* Menu de Qualidade com Opções Visuais Anteriores */}
             <div className="relative">
               <button
                 onClick={(e) => {
@@ -716,6 +764,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                 }}
                 className="player-menu-trigger h-9 px-2 sm:px-2.5 flex items-center gap-1 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
                 title="Qualidade do Vídeo"
+                aria-label="Qualidade do Vídeo"
               >
                 <Settings className="w-4 h-4 text-slate-400" />
                 <span className="uppercase text-[11px] font-mono">
@@ -727,7 +776,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                 <div className="player-menu-content absolute bottom-12 right-0 w-52 bg-[#12131A] border border-slate-800 rounded-xl p-2 shadow-2xl z-40">
                   <div className="px-2 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                     <span>Qualidade</span>
-                    <span className="text-[10px] text-indigo-400 font-normal">HLS Multi-Bitrate</span>
+                    <span className="text-[10px] text-slate-400 font-normal">Resoluções</span>
                   </div>
                   {(['auto', '1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
                     <button
@@ -740,16 +789,19 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                       }`}
                     >
                       <div className="flex items-center gap-2">
-                        <span className="uppercase">{q === 'auto' ? 'Automático (Adaptativo)' : q}</span>
+                        <span className="uppercase">{q === 'auto' ? 'Automático' : q}</span>
                         {q === '1080p' && (
                           <span className="text-[10px] text-slate-400 font-normal">Full HD</span>
+                        )}
+                        {q === '720p' && (
+                          <span className="text-[10px] text-slate-400 font-normal">HD</span>
                         )}
                       </div>
                       {selectedQuality === q && <Check className="w-3.5 h-3.5 text-indigo-400" />}
                     </button>
                   ))}
                   <div className="mt-2 pt-2 border-t border-slate-800 px-2 text-[10px] text-slate-400 leading-normal">
-                    Interface conectável ao motor HLS.js / Shaka Player para transição suave de bitrate.
+                    A troca de resolução não está disponível para esta fonte.
                   </div>
                 </div>
               )}

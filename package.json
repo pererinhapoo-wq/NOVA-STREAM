@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/validate-url.test.ts && tsx tests/import-episodes.test.ts"
+    "test": "tsx tests/validate-url.test.ts && tsx tests/import-episodes.test.ts && tsx tests/player-quality.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

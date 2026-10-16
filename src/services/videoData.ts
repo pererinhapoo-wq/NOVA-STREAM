@@ -265,4 +265,4 @@ export const resetStoredVideos = (): VideoItem[] => {
   }
   return inMemoryVideosCache;
 };
-export { classifyVideoResolution, formatDuration } from './videoMetadata';
+export { classifyVideoResolution, formatDuration, formatQualityLabel } from './videoMetadata';
