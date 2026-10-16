@@ -1,4 +1,5 @@
 import { VideoItem, VideoCategory } from '../types/video';
+import { parseVideoSeriesMetadata } from './animeSeriesGrouping';
 
 export type QueueItemStatus = 'pendente' | 'invalida' | 'duplicada';
 
@@ -179,9 +180,21 @@ export function buildImportCandidates(
       if (v.videoUrl) {
         existingUrlSet.add(normalizeUrlForComparison(v.videoUrl));
       }
-      const keyFromTitle = extractEpisodeKeyFromTitle(v.title);
-      if (keyFromTitle) {
-        existingEpisodeKeySet.add(keyFromTitle);
+      const parsed = parseVideoSeriesMetadata(v);
+      if (
+        parsed.isSeries &&
+        parsed.isConfirmedNumber &&
+        typeof parsed.seriesTitle === 'string' &&
+        typeof parsed.seasonNumber === 'number' &&
+        typeof parsed.episodeNumber === 'number'
+      ) {
+        const key = getEpisodeSeriesKey(parsed.seriesTitle, parsed.seasonNumber, parsed.episodeNumber);
+        existingEpisodeKeySet.add(key);
+      } else {
+        const keyFromTitle = extractEpisodeKeyFromTitle(v.title);
+        if (keyFromTitle) {
+          existingEpisodeKeySet.add(keyFromTitle);
+        }
       }
     }
   }

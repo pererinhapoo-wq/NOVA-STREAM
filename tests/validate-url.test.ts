@@ -476,6 +476,120 @@ async function runSuite() {
     'Fallback de status 501 executado com sucesso para GET Range (HTTP 206)'
   );
 
+  // Teste 4.6: HEAD 403 seguido de GET 206 com conteúdo de vídeo reconhecível
+  mockHttpServer.removeAllListeners('request');
+  mockHttpServer.on('request', (req, res) => {
+    if (req.method === 'HEAD' && req.url === '/signed-video-403-to-206.mp4') {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('HEAD forbidden for signed GET URL');
+    } else if (req.method === 'GET' && req.url === '/signed-video-403-to-206.mp4') {
+      res.writeHead(206, {
+        'Content-Type': 'video/mp4',
+        'Content-Range': 'bytes 0-1024/15000000',
+        'Accept-Ranges': 'bytes',
+      });
+      res.end(Buffer.alloc(1024, 0x02));
+    }
+  });
+
+  const fallbackCheck403to206 = await validateMediaUrlSafely(
+    `http://mock.safe-test.com:${mockPort}/signed-video-403-to-206.mp4`,
+    { customLookup: mockDnsLookup, allowLoopbackForMockTest: true }
+  );
+  assert(
+    fallbackCheck403to206.httpStatus === 206 &&
+      fallbackCheck403to206.isMediaCompatible === true &&
+      fallbackCheck403to206.diagnostic.level === 'midia_compativel',
+    'HEAD 403 seguido de GET 206 com vídeo reconhecido resulta em midia_compativel (HTTP 206)'
+  );
+
+  // Teste 4.7: HEAD 403 seguido de GET 200 com vídeo reconhecível e leitura limitada
+  mockHttpServer.removeAllListeners('request');
+  mockHttpServer.on('request', (req, res) => {
+    if (req.method === 'HEAD' && req.url === '/signed-video-403-to-200.mp4') {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+    } else if (req.method === 'GET' && req.url === '/signed-video-403-to-200.mp4') {
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Accept-Ranges': 'bytes',
+      });
+      // Servidor envia stream que excede 64KB
+      const bigChunk = Buffer.alloc(16 * 1024, 0x33);
+      let sentBytes = 0;
+      const streamInt = setInterval(() => {
+        if (res.writableEnded || res.destroyed) {
+          clearInterval(streamInt);
+          return;
+        }
+        res.write(bigChunk);
+        sentBytes += bigChunk.length;
+        if (sentBytes >= 128 * 1024) {
+          clearInterval(streamInt);
+          res.end();
+        }
+      }, 5);
+      req.on('close', () => clearInterval(streamInt));
+    }
+  });
+
+  const fallbackCheck403to200 = await validateMediaUrlSafely(
+    `http://mock.safe-test.com:${mockPort}/signed-video-403-to-200.mp4`,
+    { customLookup: mockDnsLookup, allowLoopbackForMockTest: true }
+  );
+  assert(
+    fallbackCheck403to200.httpStatus === 200 &&
+      fallbackCheck403to200.isMediaCompatible === true &&
+      fallbackCheck403to200.truncated === true &&
+      fallbackCheck403to200.diagnostic.level === 'midia_compativel',
+    'HEAD 403 seguido de GET 200 com vídeo reconhecido e leitura limitada resulta em midia_compativel e truncated=true'
+  );
+
+  // Teste 4.8: HEAD 403 seguido de GET 403 (ambos rejeitados)
+  mockHttpServer.removeAllListeners('request');
+  mockHttpServer.on('request', (req, res) => {
+    if (req.url === '/signed-video-403-to-403.mp4') {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Access Denied');
+    }
+  });
+
+  const fallbackCheck403to403 = await validateMediaUrlSafely(
+    `http://mock.safe-test.com:${mockPort}/signed-video-403-to-403.mp4`,
+    { customLookup: mockDnsLookup, allowLoopbackForMockTest: true }
+  );
+  assert(
+    fallbackCheck403to403.httpStatus === 403 &&
+      fallbackCheck403to403.isMediaCompatible === false &&
+      fallbackCheck403to403.diagnostic.level === 'acesso_negado_ou_expirado' &&
+      fallbackCheck403to403.diagnostic.message.includes('Acesso negado (HTTP 403)'),
+    'HEAD 403 seguido de GET 403 resulta em acesso_negado_ou_expirado com mensagem precisa'
+  );
+
+  // Teste 4.9: HEAD 403 seguido de GET que responde HTML (não-vídeo)
+  mockHttpServer.removeAllListeners('request');
+  mockHttpServer.on('request', (req, res) => {
+    if (req.method === 'HEAD' && req.url === '/signed-page-403-to-html') {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+    } else if (req.method === 'GET' && req.url === '/signed-page-403-to-html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!DOCTYPE html><html><body>Login Page</body></html>');
+    }
+  });
+
+  const fallbackCheck403toHtml = await validateMediaUrlSafely(
+    `http://mock.safe-test.com:${mockPort}/signed-page-403-to-html`,
+    { customLookup: mockDnsLookup, allowLoopbackForMockTest: true }
+  );
+  assert(
+    fallbackCheck403toHtml.httpStatus === 200 &&
+      fallbackCheck403toHtml.isMediaCompatible === false &&
+      fallbackCheck403toHtml.diagnostic.level === 'servidor_conectado' &&
+      fallbackCheck403toHtml.diagnostic.message.includes('não é um fluxo de vídeo reconhecido'),
+    'HEAD 403 seguido de GET HTML não é considerado mídia compatível (diagnostic: servidor_conectado)'
+  );
+
   // -----------------------------------------------------------------
   // 5. CANCELAMENTO DO CLIENTE E CONCORRÊNCIA NA API EXPRESS
   // -----------------------------------------------------------------

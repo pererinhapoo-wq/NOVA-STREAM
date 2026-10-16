@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { VideoItem, ActiveTab } from './types/video';
 import {
   getStoredVideos,
@@ -12,7 +12,7 @@ import { Header } from './components/common/Header';
 import { BottomNav } from './components/common/BottomNav';
 import { Footer } from './components/common/Footer';
 import { HomeView } from './components/home/HomeView';
-import { LibraryView } from './components/library/LibraryView';
+import { LibraryView, LibraryNavState } from './components/library/LibraryView';
 import { AdminUploadView } from './components/admin/AdminUploadView';
 import { ArchitectureView } from './components/architecture/ArchitectureView';
 import { CustomVideoPlayer, VideoMetadataUpdates } from './components/player/CustomVideoPlayer';
@@ -29,6 +29,100 @@ export default function App() {
   const [playingVideo, setPlayingVideo] = useState<VideoItem | null>(null);
   const [detailsVideo, setDetailsVideo] = useState<VideoItem | null>(null);
   const [editingVideo, setEditingVideo] = useState<VideoItem | null>(null);
+
+  // Navegação hierárquica da Biblioteca (Biblioteca -> Anime -> Temporada -> Episódios)
+  const [libraryNav, setLibraryNav] = useState<LibraryNavState>({ level: 'root' });
+  const [adminPrefill, setAdminPrefill] = useState<{ seriesTitle: string; seasonNumber: number } | null>(null);
+  const [adminReturnSeason, setAdminReturnSeason] = useState<{
+    animeTitle: string;
+    animeId: string;
+    seasonNumber: number;
+  } | null>(null);
+
+  // Referências mutáveis para o listener de popstate evitar stale closures
+  const playingVideoRef = useRef(playingVideo);
+  playingVideoRef.current = playingVideo;
+
+  const detailsVideoRef = useRef(detailsVideo);
+  detailsVideoRef.current = detailsVideo;
+
+  const editingVideoRef = useRef(editingVideo);
+  editingVideoRef.current = editingVideo;
+
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+
+  const libraryNavRef = useRef(libraryNav);
+  libraryNavRef.current = libraryNav;
+
+  const adminReturnSeasonRef = useRef(adminReturnSeason);
+  adminReturnSeasonRef.current = adminReturnSeason;
+
+  // Interceptador e sincronizador seguro do botão Voltar do navegador e Android (popstate)
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      // 1. Se o player estiver ativo, o retorno fecha o player e preserva a tela de origem intacta
+      if (playingVideoRef.current) {
+        setPlayingVideo(null);
+        return;
+      }
+
+      // 2. Se modais de detalhes ou edição estiverem abertos, fechá-los
+      if (detailsVideoRef.current) {
+        setDetailsVideo(null);
+        return;
+      }
+      if (editingVideoRef.current) {
+        setEditingVideo(null);
+        return;
+      }
+
+      // 3. Se estiver na Ingestão vindo de "Adicionar episódios", retornar para a temporada de origem
+      if (activeTabRef.current === 'admin' && adminReturnSeasonRef.current) {
+        const target = adminReturnSeasonRef.current;
+        setActiveTab('library');
+        setLibraryNav({
+          level: 'season',
+          animeId: target.animeId,
+          seasonNumber: target.seasonNumber,
+        });
+        setAdminReturnSeason(null);
+        return;
+      }
+
+      // 4. Se estiver em subníveis da Biblioteca
+      if (activeTabRef.current === 'library') {
+        const curNav = libraryNavRef.current;
+        if (curNav.level === 'season') {
+          setLibraryNav({ level: 'anime', animeId: curNav.animeId });
+          return;
+        }
+        if (curNav.level === 'anime') {
+          setLibraryNav({ level: 'root' });
+          return;
+        }
+      }
+
+      // 5. Restauração de histórico seguro estruturado
+      const state = event.state;
+      if (state && state._novastream) {
+        if (state.tab) setActiveTab(state.tab);
+        if (state.libraryNav) setLibraryNav(state.libraryNav);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const pushSafeHistoryState = useCallback((state: any) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.history.pushState({ ...state, _novastream: true }, '');
+    } catch {
+      // no-op
+    }
+  }, []);
 
   // Sincronizar persistência sempre que o catálogo for modificado
   useEffect(() => {
@@ -48,6 +142,7 @@ export default function App() {
     const activeUrl = video.isLocalFile
       ? getLocalVideoUrl(video.id) || video.videoUrl
       : video.videoUrl;
+    pushSafeHistoryState({ tab: activeTab, libraryNav, isPlayer: true });
     setPlayingVideo({ ...video, videoUrl: activeUrl });
     setDetailsVideo(null);
   };
@@ -179,7 +274,65 @@ export default function App() {
     }
     setSearchQuery('');
     setActiveTab('library');
-  }, []);
+    pushSafeHistoryState({ tab: 'library', libraryNav });
+  }, [libraryNav, pushSafeHistoryState]);
+
+  const handleLibraryNavChange = useCallback(
+    (next: LibraryNavState) => {
+      setLibraryNav(next);
+      pushSafeHistoryState({ tab: 'library', libraryNav: next });
+    },
+    [pushSafeHistoryState]
+  );
+
+  const handleAddEpisodesToSeason = useCallback(
+    (seriesTitle: string, seasonNumber: number) => {
+      const cleanSlug = seriesTitle
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/[^a-z0-9]+/g, '-');
+      const animeId = `anime-${cleanSlug}`;
+
+      setAdminPrefill({ seriesTitle, seasonNumber });
+      setAdminReturnSeason({ animeTitle: seriesTitle, animeId, seasonNumber });
+      setActiveTab('admin');
+      pushSafeHistoryState({
+        tab: 'admin',
+        adminReturn: { animeTitle: seriesTitle, animeId, seasonNumber },
+      });
+    },
+    [pushSafeHistoryState]
+  );
+
+  const handleReturnFromAdminToSeason = useCallback(
+    (seriesTitle: string, seasonNumber: number) => {
+      const cleanSlug = seriesTitle
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/[^a-z0-9]+/g, '-');
+      const animeId = `anime-${cleanSlug}`;
+
+      setActiveTab('library');
+      setLibraryNav({
+        level: 'season',
+        animeId,
+        seasonNumber,
+      });
+      setAdminPrefill(null);
+      setAdminReturnSeason(null);
+      pushSafeHistoryState({
+        tab: 'library',
+        libraryNav: { level: 'season', animeId, seasonNumber },
+      });
+    },
+    [pushSafeHistoryState]
+  );
 
   const handleResetDemoVideos = () => {
     const defaultList = resetStoredVideos();
@@ -192,6 +345,7 @@ export default function App() {
       setHighlightedVideoId(null);
     }
     setActiveTab(tab);
+    pushSafeHistoryState({ tab, libraryNav });
   };
 
   return (
@@ -229,6 +383,9 @@ export default function App() {
             onDeleteVideo={handleDeleteVideo}
             onNavigateToUpload={() => handleTabChange('admin')}
             onResetDemoVideos={handleResetDemoVideos}
+            navState={libraryNav}
+            onNavChange={handleLibraryNavChange}
+            onAddEpisodesToSeason={handleAddEpisodesToSeason}
           />
         )}
 
@@ -237,6 +394,10 @@ export default function App() {
             onVideoCreated={handleVideoCreated}
             onNavigateToLibrary={handleNavigateToLibrary}
             existingVideos={videos}
+            initialSeriesTitle={adminPrefill?.seriesTitle}
+            initialSeasonNumber={adminPrefill?.seasonNumber}
+            initialUploadTab="url_seasons"
+            onReturnToSeason={handleReturnFromAdminToSeason}
           />
         )}
 

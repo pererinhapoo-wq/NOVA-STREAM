@@ -809,8 +809,12 @@ export async function validateMediaUrlSafely(
       let stepResult;
       try {
         stepResult = await performSafeHttpCheck(currentUrl, 'HEAD', redirectHop, stepOptions);
-        // Se retornar 405 Method Not Allowed ou 501, fallback com GET Range limitado
-        if (stepResult.statusCode === 405 || stepResult.statusCode === 501) {
+        // Se retornar 405 Method Not Allowed, 501 Not Implemented ou 403 Forbidden (comum em URLs assinadas para GET), fallback com GET Range limitado
+        if (
+          stepResult.statusCode === 405 ||
+          stepResult.statusCode === 501 ||
+          stepResult.statusCode === 403
+        ) {
           const fallbackRemaining = overallDeadline - Date.now();
           if (fallbackRemaining <= 0) {
             throw new Error(`TIMEOUT: Limite de ${totalTimeoutMs}ms excedido para a operação completa`);
@@ -931,7 +935,10 @@ export async function validateMediaUrlSafely(
     }
   } else if (statusCode === 401 || statusCode === 403) {
     diagnosticLevel = 'acesso_negado_ou_expirado';
-    diagnosticMessage = `Acesso negado ou token expirado (HTTP ${statusCode}). O servidor remoto rejeitou a requisição.`;
+    diagnosticMessage =
+      statusCode === 403
+        ? 'Acesso negado (HTTP 403). O servidor remoto rejeitou a requisição.'
+        : `Acesso negado ou token expirado (HTTP ${statusCode}). O servidor remoto rejeitou a requisição.`;
   } else if (statusCode === 404) {
     diagnosticLevel = 'acesso_negado_ou_expirado';
     diagnosticMessage = 'Arquivo de vídeo não encontrado no servidor remoto (HTTP 404).';

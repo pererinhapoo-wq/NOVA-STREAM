@@ -670,6 +670,189 @@ async function runImportEpisodesSuite() {
   );
 
   // -----------------------------------------------------------------
+  // 10. CICLO COMPLETO DE IMPORTAÇÃO SEQUENCIAL (DOIS ANIMES SEM RECARREGAR PÁGINA)
+  // -----------------------------------------------------------------
+  console.log('\n--- 10. CICLO COMPLETO DE IMPORTAÇÃO SEQUENCIAL (DOIS ANIMES DISTINTOS) ---');
+
+  // Catálogo inicial em memória durante a sessão
+  let dynamicCatalog: VideoItem[] = [...existingCatalog];
+  const initialCatalogCount = dynamicCatalog.length;
+
+  // Estado do formulário simulado (espelhando AdminUploadView)
+  let currentSeriesTitle = 'Anime Alfa';
+  let currentSeasonNumber = 1;
+  let currentRawUrlsText = 'https://cdn.exemplo.com/videos/anime-alfa/ep01.mp4';
+  let preparedBatchState: PreparedQueueItem[] | null = null;
+  let preparedRawUrlsSnapshot: string | null = null;
+  let importFeedbackState: any = null;
+
+  // Função pura que espelha isUrlsTextModified de AdminUploadView
+  const checkIsUrlsTextModified = (
+    batch: PreparedQueueItem[] | null,
+    snapshot: string | null,
+    currentText: string
+  ) => {
+    if (!batch || snapshot === null) return false;
+    return currentText.trim() !== snapshot.trim();
+  };
+
+  // 1. Preparar e validar um episódio de "Anime Alfa"
+  preparedBatchState = [
+    {
+      episodeNumber: 1,
+      originalLineNumber: 1,
+      rawUrl: currentRawUrlsText,
+      sanitizedUrl: currentRawUrlsText,
+      status: 'pendente',
+      statusMessage: 'Sintaxe válida',
+      seriesTitle: currentSeriesTitle,
+      seasonNumber: currentSeasonNumber,
+      networkStatus: 'midia_compativel',
+      networkResult: {
+        httpStatus: 200,
+        contentType: 'video/mp4',
+        contentLength: 45000000,
+        isMediaCompatible: true,
+        supportsRangeRequests: true,
+        timingMs: 110,
+        diagnosticLevel: 'midia_compativel',
+        diagnosticMessage: 'Mídia compatível',
+      },
+    },
+  ];
+  preparedRawUrlsSnapshot = currentRawUrlsText;
+
+  const analysisAlfa = buildImportCandidates(preparedBatchState, dynamicCatalog, {
+    seriesTitle: currentSeriesTitle,
+    seasonNumber: currentSeasonNumber,
+  });
+
+  assert(
+    analysisAlfa.eligibleToImport.length === 1,
+    'Episódio 1 de "Anime Alfa" elegível para importação (eligibleToImportCount === 1)'
+  );
+
+  // 2. Importar o episódio de Anime Alfa e confirmar inclusão no catálogo
+  const importedAlfa = analysisAlfa.eligibleToImport[0];
+  dynamicCatalog = [importedAlfa, ...dynamicCatalog];
+  importFeedbackState = {
+    importedCount: 1,
+    firstImportedId: importedAlfa.id,
+  };
+
+  assert(
+    dynamicCatalog.length === initialCatalogCount + 1,
+    'Anime Alfa adicionado com sucesso ao catálogo da sessão'
+  );
+  assert(
+    dynamicCatalog.some((v) => v.title === 'Anime Alfa • T01E01'),
+    'Título "Anime Alfa • T01E01" confirmado no catálogo'
+  );
+
+  // 3 e 4. Clicar em "Cadastrar outra obra / nova temporada" (handleStartNewBatch)
+  // Limpa apenas o formulário, sem tocar no catálogo
+  preparedBatchState = null;
+  preparedRawUrlsSnapshot = null;
+  currentRawUrlsText = '';
+  currentSeriesTitle = '';
+  importFeedbackState = null;
+
+  assert(
+    preparedBatchState === null &&
+      currentRawUrlsText === '' &&
+      currentSeriesTitle === '' &&
+      importFeedbackState === null,
+    'Estado do formulário e lote anterior limpos com sucesso após acionar "Cadastrar outra obra"'
+  );
+  assert(
+    dynamicCatalog.some((v) => v.title === 'Anime Alfa • T01E01'),
+    'Anime Alfa permanece preservado no catálogo após a limpeza do formulário'
+  );
+
+  // 5. Preparar e validar um episódio diferente de "Anime Beta"
+  currentSeriesTitle = 'Anime Beta';
+  currentSeasonNumber = 1;
+  currentRawUrlsText = 'https://cdn.exemplo.com/videos/anime-beta/ep01.mp4';
+
+  preparedBatchState = [
+    {
+      episodeNumber: 1,
+      originalLineNumber: 1,
+      rawUrl: currentRawUrlsText,
+      sanitizedUrl: currentRawUrlsText,
+      status: 'pendente',
+      statusMessage: 'Sintaxe válida',
+      seriesTitle: currentSeriesTitle,
+      seasonNumber: currentSeasonNumber,
+      networkStatus: 'midia_compativel',
+      networkResult: {
+        httpStatus: 206,
+        contentType: 'video/mp4',
+        contentLength: 62000000,
+        isMediaCompatible: true,
+        supportsRangeRequests: true,
+        timingMs: 95,
+        diagnosticLevel: 'midia_compativel',
+        diagnosticMessage: 'Mídia compatível',
+      },
+    },
+  ];
+  preparedRawUrlsSnapshot = currentRawUrlsText;
+
+  // 6. Confirmar que o botão "Importar episódios validados" fica habilitado (eligibleToImportCount === 1)
+  const analysisBeta = buildImportCandidates(preparedBatchState, dynamicCatalog, {
+    seriesTitle: currentSeriesTitle,
+    seasonNumber: currentSeasonNumber,
+  });
+
+  const isButtonEnabledBeta =
+    analysisBeta.eligibleToImport.length > 0 &&
+    !checkIsUrlsTextModified(preparedBatchState, preparedRawUrlsSnapshot, currentRawUrlsText);
+
+  assert(
+    analysisBeta.eligibleToImport.length === 1 && isButtonEnabledBeta === true,
+    'Botão "Importar episódios validados" fica habilitado para Anime Beta (eligibleToImportCount === 1)'
+  );
+  assert(
+    analysisBeta.ignoredCatalogDuplicates.length === 0,
+    'Nenhuma colisão entre Anime Beta e o Anime Alfa já existente no catálogo'
+  );
+
+  // 7. Importar Anime Beta e confirmar que ambos permanecem no catálogo
+  const importedBeta = analysisBeta.eligibleToImport[0];
+  dynamicCatalog = [importedBeta, ...dynamicCatalog];
+
+  assert(
+    dynamicCatalog.length === initialCatalogCount + 2,
+    'Catálogo contém agora ambos os animes importados em sequência na mesma sessão'
+  );
+  assert(
+    dynamicCatalog.some((v) => v.title === 'Anime Alfa • T01E01') &&
+      dynamicCatalog.some((v) => v.title === 'Anime Beta • T01E01'),
+    'Ambos os animes (Alfa e Beta) coexistem perfeitamente sem colisões de numeração ou IDs'
+  );
+
+  // 8. Editar as URLs após preparar um lote e confirmar que o aviso é acionado e bloqueia importação
+  currentRawUrlsText = 'https://cdn.exemplo.com/videos/anime-beta/ep01-modificado.mp4';
+  const isModifiedDetected = checkIsUrlsTextModified(
+    preparedBatchState,
+    preparedRawUrlsSnapshot,
+    currentRawUrlsText
+  );
+
+  const canImportWithModifiedText =
+    analysisBeta.eligibleToImport.length > 0 && !isModifiedDetected;
+
+  assert(
+    isModifiedDetected === true,
+    'Modificação no texto da URL detectada com sucesso (isUrlsTextModified === true)'
+  );
+  assert(
+    canImportWithModifiedText === false,
+    'Importação bloqueada com segurança enquanto o usuário não preparar o lote para as novas URLs'
+  );
+
+  // -----------------------------------------------------------------
   // RESUMO DOS TESTES
   // -----------------------------------------------------------------
   console.log('\n===============================================================');

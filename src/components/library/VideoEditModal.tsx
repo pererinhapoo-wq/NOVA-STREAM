@@ -12,15 +12,27 @@ interface VideoEditModalProps {
 export const VideoEditModal: React.FC<VideoEditModalProps> = ({ video, onClose, onSave }) => {
   if (!video) return null;
 
-  const [title, setTitle] = useState(video.title);
-  const [description, setDescription] = useState(video.description);
-  const [category, setCategory] = useState<VideoCategory>(video.category);
-  const [resolution, setResolution] = useState<VideoResolution>(video.resolution);
-  const [tagsStr, setTagsStr] = useState(video.tags.join(', '));
+  const [title, setTitle] = useState(video.title || '');
+  const [description, setDescription] = useState(video.description || '');
+  const [category, setCategory] = useState<VideoCategory>(video.category || 'Documentários & Demos');
+  const [resolution, setResolution] = useState<VideoResolution>(video.resolution || 'N/D');
+  const [tagsStr, setTagsStr] = useState(Array.isArray(video.tags) ? video.tags.join(', ') : '');
   const [error, setError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (video) {
+      setTitle(video.title || '');
+      setDescription(video.description || '');
+      setCategory(video.category || 'Documentários & Demos');
+      setResolution(video.resolution || 'N/D');
+      setTagsStr(Array.isArray(video.tags) ? video.tags.join(', ') : '');
+      setError(null);
+    }
+  }, [video]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     if (!title.trim()) {
       setError('O título é obrigatório.');
       return;
@@ -46,9 +58,13 @@ export const VideoEditModal: React.FC<VideoEditModalProps> = ({ video, onClose, 
     <div
       role="dialog"
       aria-modal="true"
+      onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="relative w-full max-w-lg bg-[#12131A] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-lg bg-[#12131A] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl"
+      >
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
           <h2 className="text-base font-bold text-white">Editar Informações do Vídeo</h2>
           <button

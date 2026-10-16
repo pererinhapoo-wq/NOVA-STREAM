@@ -33,10 +33,12 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ArrowLeft,
 } from 'lucide-react';
 import { VideoItem, VideoCategory, VideoResolution, VideoUploadStatus } from '../../types/video';
 import { APP_CONFIG } from '../../config/appConfig';
 import { registerLocalVideoFile, getStoredVideos } from '../../services/videoData';
+import { getSeasonEpisodeAnalysis, SeasonEpisodeAnalysis } from '../../services/animeSeriesGrouping';
 import {
   buildImportCandidates,
   generateUniqueEpisodeId,
@@ -58,6 +60,10 @@ export interface AdminUploadViewProps {
   onVideoCreated: (newVideo: VideoItem) => boolean;
   onNavigateToLibrary: (videoId?: string) => void;
   existingVideos?: VideoItem[];
+  initialSeriesTitle?: string;
+  initialSeasonNumber?: number;
+  initialUploadTab?: UploadTab;
+  onReturnToSeason?: (animeTitle: string, seasonNumber: number) => void;
 }
 
 export type {
@@ -114,17 +120,65 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
   onVideoCreated,
   onNavigateToLibrary,
   existingVideos,
+  initialSeriesTitle,
+  initialSeasonNumber,
+  initialUploadTab,
+  onReturnToSeason,
 }) => {
   // Controle de abas da área de envio
-  const [activeUploadTab, setActiveUploadTab] = useState<UploadTab>('file');
+  const [activeUploadTab, setActiveUploadTab] = useState<UploadTab>(
+    initialUploadTab || (initialSeriesTitle ? 'url_seasons' : 'file')
+  );
 
   // Controles funcionais da aba URLs / Temporadas
-  const [seriesTitle, setSeriesTitle] = useState('');
-  const [seasonNumber, setSeasonNumber] = useState<number>(1);
+  const [seriesTitle, setSeriesTitle] = useState(initialSeriesTitle || '');
+  const [seasonNumber, setSeasonNumber] = useState<number>(initialSeasonNumber || 1);
   const [rawUrlsText, setRawUrlsText] = useState('');
+
+  // Catálogo ativo para verificação de temporadas e numeração existente
+  const currentCatalog = useMemo(() => {
+    return existingVideos || getStoredVideos();
+  }, [existingVideos]);
+
+  // Análise da temporada da obra no catálogo e sugestão honesta do próximo episódio
+  const seasonAnalysis = useMemo(() => {
+    return getSeasonEpisodeAnalysis(currentCatalog, seriesTitle, seasonNumber);
+  }, [currentCatalog, seriesTitle, seasonNumber]);
+
+  const [startEpisodeNumber, setStartEpisodeNumber] = useState<number>(() => {
+    return seasonAnalysis.suggestedNextEpisodeNumber;
+  });
+  const [isManualStartEpisode, setIsManualStartEpisode] = useState<boolean>(false);
+
+  // Sincronizar caso props iniciais sejam atualizadas dinamicamente
+  useEffect(() => {
+    if (initialSeriesTitle) {
+      setSeriesTitle(initialSeriesTitle);
+      setActiveUploadTab('url_seasons');
+      setIsManualStartEpisode(false);
+    }
+    if (typeof initialSeasonNumber === 'number') {
+      setSeasonNumber(initialSeasonNumber);
+      setIsManualStartEpisode(false);
+    }
+  }, [initialSeriesTitle, initialSeasonNumber]);
+
+  // Atualizar sugestão automática se o usuário não tiver modificado manualmente
+  useEffect(() => {
+    if (!isManualStartEpisode) {
+      setStartEpisodeNumber(seasonAnalysis.suggestedNextEpisodeNumber);
+    }
+  }, [seasonAnalysis.suggestedNextEpisodeNumber, isManualStartEpisode]);
 
   // Fila de pré-processamento estruturada
   const [preparedBatch, setPreparedBatch] = useState<PreparedQueueItem[] | null>(null);
+  const [preparedRawUrlsText, setPreparedRawUrlsText] = useState<string | null>(null);
+
+  // Detecção de modificação nas URLs após preparação do lote
+  const isUrlsTextModified = useMemo(() => {
+    if (!preparedBatch || preparedRawUrlsText === null) return false;
+    return rawUrlsText.trim() !== preparedRawUrlsText.trim();
+  }, [preparedBatch, preparedRawUrlsText, rawUrlsText]);
 
   // Estados de controle da validação de rede pela API
   const [isValidating, setIsValidating] = useState<boolean>(false);
@@ -296,7 +350,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     const currentSeries = seriesTitle.trim() || 'Obra Sem Título';
 
     const queueItems: PreparedQueueItem[] = validLinesWithIndex.map((entry, idx) => {
-      const episodeNumber = idx + 1;
+      const episodeNumber = startEpisodeNumber + idx;
       const { isValid, normalized, error } = validateUrlSyntax(entry.rawUrl);
 
       if (!isValid) {
@@ -346,8 +400,23 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     });
 
     setPreparedBatch(queueItems);
+    setPreparedRawUrlsText(rawUrlsText);
     setExpandedDiagnostics({});
   };
+
+  // Permite ajuste manual pontual de um episódio na fila preparada
+  const handleUpdateItemEpisodeNumber = useCallback((index: number, newNumber: number) => {
+    if (newNumber < 1) return;
+    setPreparedBatch((prev) => {
+      if (!prev) return prev;
+      const next = [...prev];
+      next[index] = {
+        ...next[index],
+        episodeNumber: newNumber,
+      };
+      return next;
+    });
+  }, []);
 
   const handleResetPreparedBatch = () => {
     if (isValidating) {
@@ -356,10 +425,30 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       isQueueRunningRef.current = false;
     }
     setPreparedBatch(null);
+    setPreparedRawUrlsText(null);
     setCancellationNotice(null);
     setImportFeedback(null);
     setExpandedDiagnostics({});
   };
+
+  // Limpa exclusivamente o estado do formulário de importação para cadastrar nova obra sem afetar o catálogo
+  const handleStartNewBatch = useCallback(() => {
+    if (isValidating) {
+      abortControllerRef.current?.abort();
+      setIsValidating(false);
+      isQueueRunningRef.current = false;
+    }
+    setPreparedBatch(null);
+    setPreparedRawUrlsText(null);
+    setRawUrlsText('');
+    setSeriesTitle('');
+    setStartEpisodeNumber(1);
+    setIsManualStartEpisode(false);
+    setImportFeedback(null);
+    setCancellationNotice(null);
+    setExpandedDiagnostics({});
+    setValidationProgress({ completed: 0, total: 0 });
+  }, [isValidating]);
 
   // Modelos de teste rápido para facilidade no celular e desktop (preenchimento seguro e previsível)
   const handleLoadSampleBatch = (count: number) => {
@@ -374,6 +463,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     }).join('\n');
     setRawUrlsText(sampleUrls);
     setPreparedBatch(null);
+    setPreparedRawUrlsText(null);
     setCancellationNotice(null);
     setImportFeedback(null);
   };
@@ -382,6 +472,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     if (isValidating) return;
     setRawUrlsText('');
     setPreparedBatch(null);
+    setPreparedRawUrlsText(null);
     setCancellationNotice(null);
     setImportFeedback(null);
   };
@@ -639,7 +730,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
 
   // Callback de importação controlada dos episódios validados
   const handleImportValidatedEpisodes = useCallback(() => {
-    if (!preparedBatch || preparedBatch.length === 0 || isImporting) return;
+    if (!preparedBatch || preparedBatch.length === 0 || isImporting || isUrlsTextModified) return;
 
     const currentCatalog = existingVideos || getStoredVideos();
     const analysis = buildImportCandidates(preparedBatch, currentCatalog, {
@@ -710,6 +801,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     seriesTitle,
     seasonNumber,
     onVideoCreated,
+    isUrlsTextModified,
   ]);
 
   // Formulário de Arquivo Local
@@ -888,6 +980,31 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
           </p>
         </div>
       </div>
+
+      {/* Banner de Retorno Direto à Temporada */}
+      {onReturnToSeason && (initialSeriesTitle || seriesTitle) && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-indigo-950/50 border border-indigo-700/60 rounded-xl text-xs text-indigo-100 shadow-md">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-white">Adicionando episódios para:</span>
+            <span className="text-indigo-300 font-medium">
+              {initialSeriesTitle || seriesTitle} • Temporada {initialSeasonNumber || seasonNumber}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onReturnToSeason(
+                initialSeriesTitle || seriesTitle,
+                initialSeasonNumber || seasonNumber
+              )
+            }
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg flex items-center justify-center gap-1.5 font-medium transition-colors cursor-pointer shrink-0"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Voltar para Temporada</span>
+          </button>
+        </div>
+      )}
 
       {/* Seletor de Abas de Métodos de Envio */}
       <div className="flex p-1 bg-[#12131A] border border-slate-800 rounded-xl gap-1 overflow-x-auto">
@@ -1285,28 +1402,34 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="sm:col-span-2">
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
+                <div className="sm:col-span-6">
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Título da Série ou Obra *
                   </label>
                   <input
                     type="text"
                     value={seriesTitle}
-                    onChange={(e) => setSeriesTitle(e.target.value)}
+                    onChange={(e) => {
+                      setSeriesTitle(e.target.value);
+                      setIsManualStartEpisode(false);
+                    }}
                     disabled={isValidating}
                     placeholder="Ex: Treinamento Corporativo Avançado"
                     className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
 
-                <div>
+                <div className="sm:col-span-3">
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Temporada
                   </label>
                   <select
                     value={seasonNumber}
-                    onChange={(e) => setSeasonNumber(Number(e.target.value))}
+                    onChange={(e) => {
+                      setSeasonNumber(Number(e.target.value));
+                      setIsManualStartEpisode(false);
+                    }}
                     disabled={isValidating}
                     className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
@@ -1317,7 +1440,70 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                     ))}
                   </select>
                 </div>
+
+                <div className="sm:col-span-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300">
+                      Episódio Inicial *
+                    </label>
+                    {isManualStartEpisode && (
+                      <span className="text-[10px] text-amber-400 font-mono">Manual</span>
+                    )}
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={999}
+                    value={startEpisodeNumber}
+                    onChange={(e) => {
+                      const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                      setStartEpisodeNumber(val);
+                      setIsManualStartEpisode(true);
+                    }}
+                    disabled={isValidating}
+                    title="Defina o número do primeiro episódio da lista ou use a sugestão automática"
+                    className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
               </div>
+
+              {/* Informação e controle da numeração sugerida pelo catálogo */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-900/60 border border-slate-800/80 rounded-lg text-xs">
+                <div className="flex items-center gap-2 text-slate-300 text-[11px]">
+                  <span className="text-slate-400">Sugestão automática do catálogo:</span>
+                  <span className="font-mono text-indigo-300 font-semibold">
+                    EP {String(seasonAnalysis.suggestedNextEpisodeNumber).padStart(2, '0')}
+                  </span>
+                  {seasonAnalysis.totalVideosInSeason > 0 && (
+                    <span className="text-slate-400">
+                      ({seasonAnalysis.totalVideosInSeason} {seasonAnalysis.totalVideosInSeason === 1 ? 'vídeo existente' : 'vídeos existentes'} nesta temporada)
+                    </span>
+                  )}
+                </div>
+                {isManualStartEpisode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStartEpisodeNumber(seasonAnalysis.suggestedNextEpisodeNumber);
+                      setIsManualStartEpisode(false);
+                    }}
+                    className="px-2 py-1 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-700/50 text-indigo-300 hover:text-white rounded text-[10px] font-medium transition-colors cursor-pointer"
+                  >
+                    Restaurar sugerido (EP {String(seasonAnalysis.suggestedNextEpisodeNumber).padStart(2, '0')})
+                  </button>
+                )}
+              </div>
+
+              {/* Aviso Explícito em caso de Ambiguidade de Numeração (ex: vídeo legado com título 'Attack on Titan temporada 1' sem tag de episódio) */}
+              {seasonAnalysis.hasAmbiguity && (
+                <div className="p-3.5 bg-amber-950/40 border border-amber-600/50 rounded-xl text-xs text-amber-200 flex items-start gap-2.5 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-white">Ambiguidade Detectada nos Metadados da Temporada</p>
+                    <p className="text-amber-300 leading-relaxed text-[11px]">{seasonAnalysis.ambiguityNotice}</p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -1386,6 +1572,16 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   </button>
                 )}
               </div>
+
+              {/* Aviso discreto de texto modificado após preparação do lote */}
+              {isUrlsTextModified && (
+                <div className="p-3 bg-amber-950/40 border border-amber-600/50 text-amber-200 rounded-xl text-xs flex items-center gap-2.5 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                  <span className="font-medium">
+                    Texto modificado — clique em <strong>Preparar Lote</strong> para analisar as novas URLs.
+                  </span>
+                </div>
+              )}
 
               {/* Botão de Disparo: Preparar Lote */}
               <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1482,7 +1678,16 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       <button
                         type="button"
                         onClick={() => executeBatchValidation()}
-                        disabled={isValidating || (batchSummary?.validPending ?? 0) === 0}
+                        disabled={
+                          isValidating ||
+                          (batchSummary?.validPending ?? 0) === 0 ||
+                          isUrlsTextModified
+                        }
+                        title={
+                          isUrlsTextModified
+                            ? 'Texto modificado — clique em Preparar Lote primeiro'
+                            : undefined
+                        }
                         className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shadow shadow-indigo-600/20 active:scale-98 cursor-pointer"
                       >
                         {isValidating ? (
@@ -1511,7 +1716,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       )}
 
                       {/* Repetir apenas falhas ou inconclusivos */}
-                      {!isValidating && (networkSummary?.failedOrInconclusive ?? 0) > 0 && (
+                      {!isValidating && (networkSummary?.failedOrInconclusive ?? 0) > 0 && !isUrlsTextModified && (
                         <button
                           type="button"
                           onClick={handleRetryFailedOrInconclusive}
@@ -1526,7 +1731,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       )}
 
                       {/* Revalidar Lote Completo (quando já finalizado) */}
-                      {!isValidating && (networkSummary?.totalValidated ?? 0) > 0 && (
+                      {!isValidating && (networkSummary?.totalValidated ?? 0) > 0 && !isUrlsTextModified && (
                         <button
                           type="button"
                           onClick={() => executeBatchValidation()}
@@ -1541,9 +1746,16 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       <button
                         type="button"
                         onClick={handleImportValidatedEpisodes}
-                        disabled={isValidating || isImporting || eligibleToImportCount === 0}
+                        disabled={
+                          isValidating ||
+                          isImporting ||
+                          eligibleToImportCount === 0 ||
+                          isUrlsTextModified
+                        }
                         title={
-                          eligibleToImportCount > 0
+                          isUrlsTextModified
+                            ? 'Texto modificado — clique em Preparar Lote para analisar as novas URLs antes de importar'
+                            : eligibleToImportCount > 0
                             ? `Importar ${eligibleToImportCount} ${
                                 eligibleToImportCount === 1
                                   ? 'episódio validado'
@@ -1552,7 +1764,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                             : 'Nenhum episódio com mídia compatível validada disponível para importação'
                         }
                         className={`px-4 py-2 text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shadow cursor-pointer ${
-                          eligibleToImportCount > 0 && !isValidating
+                          eligibleToImportCount > 0 && !isValidating && !isUrlsTextModified
                             ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40 active:scale-98'
                             : 'bg-slate-800 text-slate-500 border border-slate-700/50 cursor-not-allowed opacity-60'
                         }`}
@@ -1567,7 +1779,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                         </span>
                         <span
                           className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                            eligibleToImportCount > 0 && !isValidating
+                            eligibleToImportCount > 0 && !isValidating && !isUrlsTextModified
                               ? 'bg-emerald-950 border border-emerald-400 text-emerald-200'
                               : 'bg-slate-900 text-slate-400'
                           }`}
@@ -1607,7 +1819,27 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                               : 'Nenhum episódio elegível para importação'}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {importFeedback.importedCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleStartNewBatch}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm active:scale-98"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Cadastrar outra obra / nova temporada</span>
+                            </button>
+                          )}
+                          {importFeedback.importedCount > 0 && onReturnToSeason && seriesTitle && (
+                            <button
+                              type="button"
+                              onClick={() => onReturnToSeason(seriesTitle, seasonNumber)}
+                              className="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm active:scale-98"
+                            >
+                              <ArrowLeft className="w-3.5 h-3.5" />
+                              <span>Ver na Temporada ({seriesTitle} • T{seasonNumber})</span>
+                            </button>
+                          )}
                           {importFeedback.importedCount > 0 && (
                             <button
                               type="button"
@@ -1865,9 +2097,22 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                             {/* Linha 1: Identificação do Episódio, Status, Código HTTP e Botão Ver Diagnóstico */}
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                               <div className="flex items-center gap-2">
-                                <span className="px-2 py-0.5 bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-mono text-[10px] font-bold rounded">
-                                  EP {epNumberStr}
-                                </span>
+                                <div className="flex items-center gap-1 bg-slate-900 border border-slate-700/80 rounded px-1.5 py-0.5">
+                                  <span className="text-[10px] text-slate-400 font-mono font-medium">EP</span>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={999}
+                                    value={item.episodeNumber}
+                                    onChange={(e) => {
+                                      const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                      handleUpdateItemEpisodeNumber(idx, val);
+                                    }}
+                                    disabled={isValidating}
+                                    className="w-10 bg-transparent text-indigo-300 font-mono text-[11px] font-bold text-center focus:outline-none focus:text-white"
+                                    title="Ajustar número deste episódio individualmente"
+                                  />
+                                </div>
                                 <span className="font-semibold text-white text-xs">
                                   {item.seriesTitle ? `${item.seriesTitle} • ` : ''}T{String(item.seasonNumber).padStart(2, '0')}E{epNumberStr}
                                 </span>
