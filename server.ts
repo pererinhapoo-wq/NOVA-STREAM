@@ -17,6 +17,7 @@ export const MAX_REDIRECTS = 3;
 export const MAX_BYTES_TO_READ = 64 * 1024; // 64 KB máx
 export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 export const RATE_LIMIT_MAX_PER_WINDOW = 60;
+export const MAX_RATE_LIMIT_MAP_SIZE = 10000;
 export const MAX_CONCURRENT_VALIDATIONS = 5;
 
 let activeValidations = 0;
@@ -24,6 +25,7 @@ const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
 
 /**
  * Remove entradas expiradas do mapa de rate limit para prevenir vazamento de memória.
+ * Também expurga entradas excedentes se o mapa ultrapassar o tamanho máximo de segurança.
  */
 export function cleanupExpiredRateLimits(now = Date.now()): number {
   let removed = 0;
@@ -33,6 +35,19 @@ export function cleanupExpiredRateLimits(now = Date.now()): number {
       removed++;
     }
   }
+
+  // Se o mapa ultrapassar o limite máximo de entradas, remove preventivamente os registros mais antigos
+  if (rateLimitMap.size > MAX_RATE_LIMIT_MAP_SIZE) {
+    const excess = rateLimitMap.size - MAX_RATE_LIMIT_MAP_SIZE;
+    let count = 0;
+    for (const key of rateLimitMap.keys()) {
+      rateLimitMap.delete(key);
+      count++;
+      if (count >= excess) break;
+    }
+    removed += count;
+  }
+
   return removed;
 }
 
@@ -60,12 +75,20 @@ export function resetActiveValidations(): void {
   activeValidations = 0;
 }
 
+export function setActiveValidationsCount(val: number): void {
+  activeValidations = Math.max(0, val);
+}
+
 /**
  * Converte qualquer representação de endereço IPv6 válida em um array exato de 8 hextets (16 bits cada).
  * Suporta notação compactada (::), grupos hexadecimais e notação híbrida IPv4-mapped/pontuada.
  */
 export function parseIpv6ToHextets(ip: string): number[] | null {
-  const clean = ip.toLowerCase().split('%')[0].trim();
+  if (!ip || typeof ip !== 'string') return null;
+  let clean = ip.toLowerCase().split('%')[0].trim();
+  if (clean.startsWith('[') && clean.endsWith(']')) {
+    clean = clean.slice(1, -1).trim();
+  }
   if (!clean) return null;
 
   let parts = clean.split(':');
@@ -118,7 +141,12 @@ export function parseIpv6ToHextets(ip: string): number[] | null {
  * Cobre IPv4 e IPv6 conforme RFC 1918, RFC 3927, RFC 4193, RFC 4291, RFC 6598, RFC 6052, RFC 8215 e RFC 2544.
  */
 export function isPrivateOrSpecialIp(ip: string): boolean {
-  const family = net.isIP(ip);
+  if (!ip || typeof ip !== 'string') return true;
+  let cleanIp = ip.trim();
+  if (cleanIp.startsWith('[') && cleanIp.endsWith(']')) {
+    cleanIp = cleanIp.slice(1, -1).trim();
+  }
+  const family = net.isIP(cleanIp);
   if (!family) return true; // Bloqueio preventivo se não for IP reconhecido
 
   if (family === 4) {
@@ -236,8 +264,16 @@ export function isPrivateOrSpecialIp(ip: string): boolean {
     // Benchmarking (2001:2::/48 RFC 5180)
     if (h0 === 0x2001 && h1 === 0x0002) return true;
 
+    // ORCHID (2001:10::/28 RFC 4843)
+    if (h0 === 0x2001 && (h1 & 0xfff0) === 0x0010) return true;
+
     // ORCHIDv2 (2001:20::/28 RFC 7343)
     if (h0 === 0x2001 && (h1 & 0xfff0) === 0x0020) return true;
+
+    // Bloqueio conservador de endereços IPv6 fora do espaço Global Unicast oficial (2000::/3)
+    if ((h0 & 0xe000) !== 0x2000) {
+      return true;
+    }
 
     return false;
   }
@@ -430,6 +466,7 @@ export async function performSafeHttpCheck(
   return new Promise((resolve, reject) => {
     let finished = false;
     let globalTimer: NodeJS.Timeout | null = null;
+    let responseStream: http.IncomingMessage | null = null;
 
     const cleanup = () => {
       if (globalTimer) {
@@ -446,6 +483,9 @@ export async function performSafeHttpCheck(
         finished = true;
         cleanup();
         req.destroy();
+        if (responseStream) {
+          try { responseStream.destroy(); } catch {}
+        }
         reject(new Error('CLIENT_ABORTED'));
       }
     };
@@ -457,12 +497,15 @@ export async function performSafeHttpCheck(
       options.signal.addEventListener('abort', handleAbort);
     }
 
-    // O timeout de 4000ms cobre a operação inteira (conexão, cabeçalhos E corpo)
+    // O timeout integral cobre a operação inteira (conexão, cabeçalhos E leitura do corpo)
     globalTimer = setTimeout(() => {
       if (!finished) {
         finished = true;
         cleanup();
         req.destroy();
+        if (responseStream) {
+          try { responseStream.destroy(); } catch {}
+        }
         reject(new Error(`TIMEOUT: Limite de ${timeoutMs}ms excedido para a operação completa`));
       }
     }, timeoutMs);
@@ -492,8 +535,11 @@ export async function performSafeHttpCheck(
         method,
         headers: requestHeaders,
         lookup: safeLookup as any,
+        rejectUnauthorized: true,
+        servername: isHttps && !net.isIP(hostname) ? hostname : undefined,
       },
       (res) => {
+        responseStream = res;
         const timingMs = Date.now() - startTime;
         const statusCode = res.statusCode;
 
@@ -504,12 +550,28 @@ export async function performSafeHttpCheck(
           res.headers.location
         ) {
           req.destroy();
+          try { res.destroy(); } catch {}
           try {
-            const nextUrl = new URL(res.headers.location, targetUrl);
+            const rawLocation = Array.isArray(res.headers.location)
+              ? res.headers.location[0]
+              : res.headers.location;
+            if (!rawLocation || typeof rawLocation !== 'string' || !rawLocation.trim()) {
+              finished = true;
+              cleanup();
+              return reject(new Error('INVALID_REDIRECT_LOCATION: Cabeçalho de redirecionamento vazio'));
+            }
+            const nextUrl = new URL(rawLocation.trim(), targetUrl);
             if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
               finished = true;
               cleanup();
-              return reject(new Error(`SSRF_BLOCKED: Redirecionamento para protocolo não permitido (${nextUrl.protocol})`));
+              return reject(
+                new Error(`SSRF_BLOCKED: Redirecionamento para protocolo não permitido (${nextUrl.protocol})`)
+              );
+            }
+            if (!nextUrl.hostname) {
+              finished = true;
+              cleanup();
+              return reject(new Error('INVALID_REDIRECT_LOCATION: Hostname ausente no redirecionamento'));
             }
             finished = true;
             cleanup();
@@ -521,14 +583,17 @@ export async function performSafeHttpCheck(
               timingMs,
               truncated: false,
             });
-          } catch {
+          } catch (err: any) {
             finished = true;
             cleanup();
+            if (err.message && err.message.includes('SSRF_BLOCKED')) {
+              return reject(err);
+            }
             return reject(new Error('INVALID_REDIRECT_LOCATION: Cabeçalho de redirecionamento malformado'));
           }
         }
 
-        // Limite de bytes lidos do corpo para não baixar mídia
+        // Limite estrito de bytes lidos do corpo para não baixar mídia
         let bytesRead = 0;
         res.on('data', (chunk) => {
           bytesRead += chunk.length;
@@ -537,6 +602,7 @@ export async function performSafeHttpCheck(
             finished = true;
             cleanup();
             req.destroy(); // Corta conexão intencionalmente
+            try { res.destroy(); } catch {}
             resolve({
               statusCode,
               statusMessage: res.statusMessage,
@@ -561,6 +627,18 @@ export async function performSafeHttpCheck(
           }
         });
 
+        res.on('close', () => {
+          if (!finished && !res.complete) {
+            finished = true;
+            cleanup();
+            reject(
+              new Error(
+                'REMOTE_CONNECTION_CLOSED: Conexão encerrada prematuramente pelo servidor remoto antes do fim da resposta.'
+              )
+            );
+          }
+        });
+
         res.on('error', (err) => {
           if (!finished) {
             finished = true;
@@ -570,6 +648,27 @@ export async function performSafeHttpCheck(
         });
       }
     );
+
+    // Validação do endereço do socket no momento da conexão
+    req.on('socket', (socket) => {
+      const onConnect = () => {
+        const remoteIp = socket.remoteAddress;
+        if (remoteIp && checkIp(remoteIp)) {
+          if (!finished) {
+            finished = true;
+            cleanup();
+            req.destroy(new Error(`SSRF_BLOCKED: Conexão direta impedida para IP proibido (${remoteIp})`));
+            reject(new Error(`SSRF_BLOCKED: Conexão direta impedida para IP proibido (${remoteIp})`));
+          }
+        }
+      };
+
+      if (socket.connecting) {
+        socket.once('connect', onConnect);
+      } else if (socket.remoteAddress) {
+        onConnect();
+      }
+    });
 
     req.on('error', (err) => {
       if (!finished) {
@@ -628,8 +727,27 @@ export async function validateMediaUrlSafely(
     };
   }
 
+  // 3. Validação explícita de nome de host ausente para URLs HTTP/HTTPS
+  if (!parsedUrl.hostname) {
+    return {
+      success: false,
+      urlNormalized: rawUrlStr.trim(),
+      checkedAt,
+      isMediaCompatible: false,
+      supportsRangeRequests: false,
+      timingMs: 0,
+      diagnostic: {
+        level: 'sintaxe_invalida',
+        message: 'A URL informada não possui um nome de host válido.',
+      },
+    };
+  }
+
   // Sanitizar URL para saída pública (sem senhas ou credenciais)
   const sanitizedDisplayUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
+
+  const totalTimeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const overallDeadline = Date.now() + totalTimeoutMs;
 
   let currentUrl = parsedUrl;
   let redirectHop = 0;
@@ -640,6 +758,16 @@ export async function validateMediaUrlSafely(
       if (options?.signal?.aborted) {
         throw new Error('CLIENT_ABORTED');
       }
+
+      const remainingMs = overallDeadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error(`TIMEOUT: Limite de ${totalTimeoutMs}ms excedido para a operação completa`);
+      }
+
+      const stepOptions: ValidateOptions = {
+        ...options,
+        timeoutMs: remainingMs,
+      };
 
       // Revalida protocolo e hostname a cada salto
       if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
@@ -680,10 +808,17 @@ export async function validateMediaUrlSafely(
       // Tentar HEAD leve primeiro
       let stepResult;
       try {
-        stepResult = await performSafeHttpCheck(currentUrl, 'HEAD', redirectHop, options);
+        stepResult = await performSafeHttpCheck(currentUrl, 'HEAD', redirectHop, stepOptions);
         // Se retornar 405 Method Not Allowed ou 501, fallback com GET Range limitado
         if (stepResult.statusCode === 405 || stepResult.statusCode === 501) {
-          stepResult = await performSafeHttpCheck(currentUrl, 'GET', redirectHop, options);
+          const fallbackRemaining = overallDeadline - Date.now();
+          if (fallbackRemaining <= 0) {
+            throw new Error(`TIMEOUT: Limite de ${totalTimeoutMs}ms excedido para a operação completa`);
+          }
+          stepResult = await performSafeHttpCheck(currentUrl, 'GET', redirectHop, {
+            ...options,
+            timeoutMs: fallbackRemaining,
+          });
         }
       } catch (headErr: any) {
         if (
@@ -695,7 +830,14 @@ export async function validateMediaUrlSafely(
           throw headErr;
         }
         // Fallback para GET com Range
-        stepResult = await performSafeHttpCheck(currentUrl, 'GET', redirectHop, options);
+        const fallbackRemaining = overallDeadline - Date.now();
+        if (fallbackRemaining <= 0) {
+          throw new Error(`TIMEOUT: Limite de ${totalTimeoutMs}ms excedido para a operação completa`);
+        }
+        stepResult = await performSafeHttpCheck(currentUrl, 'GET', redirectHop, {
+          ...options,
+          timeoutMs: fallbackRemaining,
+        });
       }
 
       if (stepResult.redirectUrl) {
@@ -846,9 +988,13 @@ export async function createExpressApp() {
     }
 
     // 3. Rate limit por IP de transporte seguro
-    // NOTA DE SEGURANÇA SOBRE PROXIES:
-    // Por padrão conservador, utilizamos 'req.socket.remoteAddress'.
-    // Não confiamos em 'X-Forwarded-For' sem configuração explícita de proxy reverso conhecido.
+    // NOTA DE SEGURANÇA SOBRE PROXIES E CABEÇALHOS:
+    // Por padrão estrito contra falsificação (spoofing) de cabeçalhos HTTP, utilizamos a conexão TCP direta (req.socket.remoteAddress).
+    // Não confiamos cegamente no cabeçalho 'X-Forwarded-For' porque em ambientes onde o proxy reverso não é autenticado
+    // ou pré-configurado de maneira segura, atacantes podem forjar múltiplos valores de IP para contornar qualquer limitação.
+    // LIMITAÇÃO DOCUMENTADA: Em ambientes operando atrás de proxies reversos intermediários ou gateways compartilhados
+    // sem infraestrutura de identificação upstream, múltiplos clientes atrás do mesmo proxy compartilharão
+    // a mesma cota máxima de 60 requisições por minuto.
     const clientIp = req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     const clientRecord = rateLimitMap.get(clientIp);

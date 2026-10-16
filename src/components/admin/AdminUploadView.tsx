@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   FileVideo,
   CheckCircle2,
@@ -25,6 +25,14 @@ import {
   CheckCircle,
   RefreshCw,
   XCircle,
+  Wifi,
+  WifiOff,
+  StopCircle,
+  Globe,
+  Loader2,
+  Check,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { VideoItem, VideoCategory, VideoResolution, VideoUploadStatus } from '../../types/video';
 import { APP_CONFIG } from '../../config/appConfig';
@@ -45,6 +53,30 @@ type UploadTab = 'file' | 'url_seasons' | 'cloud';
 
 export type QueueItemStatus = 'pendente' | 'invalida' | 'duplicada';
 
+export type NetworkValidationStatus =
+  | 'nao_iniciada'
+  | 'validando'
+  | 'midia_compativel'
+  | 'servidor_conectado'
+  | 'acesso_negado_ou_expirado'
+  | 'bloqueado_ssrf'
+  | 'erro_rede'
+  | 'inconclusivo';
+
+export interface NetworkValidationDetail {
+  httpStatus?: number;
+  httpStatusText?: string;
+  contentType?: string;
+  contentLength?: number;
+  isMediaCompatible: boolean;
+  mediaTypeDetected?: string;
+  supportsRangeRequests: boolean;
+  timingMs: number;
+  truncated?: boolean;
+  diagnosticLevel: string;
+  diagnosticMessage: string;
+}
+
 export interface PreparedQueueItem {
   episodeNumber: number;
   originalLineNumber: number;
@@ -54,6 +86,9 @@ export interface PreparedQueueItem {
   statusMessage: string;
   seriesTitle: string;
   seasonNumber: number;
+  networkStatus?: NetworkValidationStatus;
+  networkResult?: NetworkValidationDetail;
+  networkError?: string;
 }
 
 export interface BatchSummary {
@@ -61,6 +96,31 @@ export interface BatchSummary {
   validPending: number;
   invalid: number;
   duplicates: number;
+}
+
+/**
+ * Normaliza e sanitiza a URL para exibição segura na interface,
+ * ocultando tokens de autenticação e assinaturas de query/hash.
+ */
+export function getSafeDisplayUrl(rawUrl: string): { display: string; hasTokens: boolean } {
+  try {
+    const u = new URL(rawUrl);
+    const hasTokens = u.search.length > 0 || u.hash.length > 0;
+    const display = `${u.protocol}//${u.host}${u.pathname}`;
+    return { display, hasTokens };
+  } catch {
+    return { display: rawUrl, hasTokens: false };
+  }
+}
+
+/**
+ * Formata bytes numéricos de forma humanamente legível.
+ */
+export function formatBytes(bytes?: number): string {
+  if (!bytes || isNaN(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
@@ -78,6 +138,52 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
   // Fila de pré-processamento estruturada
   const [preparedBatch, setPreparedBatch] = useState<PreparedQueueItem[] | null>(null);
 
+  // Estados de controle da validação de rede pela API
+  const [isValidating, setIsValidating] = useState<boolean>(false);
+  const [validationProgress, setValidationProgress] = useState<{ completed: number; total: number }>({
+    completed: 0,
+    total: 0,
+  });
+  const [cancellationNotice, setCancellationNotice] = useState<string | null>(null);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+  const isQueueRunningRef = useRef<boolean>(false);
+
+  // Controle de expansão/recolhimento dos detalhes de diagnóstico individual por episódio
+  const [expandedDiagnostics, setExpandedDiagnostics] = useState<Record<number, boolean>>({});
+
+  const toggleDiagnostic = useCallback((episodeNumber: number) => {
+    setExpandedDiagnostics((prev) => ({
+      ...prev,
+      [episodeNumber]: !prev[episodeNumber],
+    }));
+  }, []);
+
+  const handleExpandAllDiagnostics = useCallback(() => {
+    if (!preparedBatch) return;
+    const allExpanded: Record<number, boolean> = {};
+    preparedBatch.forEach((item) => {
+      allExpanded[item.episodeNumber] = true;
+    });
+    setExpandedDiagnostics(allExpanded);
+  }, [preparedBatch]);
+
+  const handleCollapseAllDiagnostics = useCallback(() => {
+    setExpandedDiagnostics({});
+  }, []);
+
+  // Limpeza de cancelamento ao desmontar o componente
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
   // Parser em tempo real das linhas não vazias
   const parsedUrls = useMemo(() => {
     if (!rawUrlsText.trim()) return [];
@@ -90,7 +196,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       .filter((item) => item.url.length > 0);
   }, [rawUrlsText]);
 
-  // Resumo estatístico do lote preparado
+  // Resumo estatístico da análise local do lote preparado
   const batchSummary: BatchSummary | null = useMemo(() => {
     if (!preparedBatch) return null;
     return {
@@ -98,6 +204,38 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       validPending: preparedBatch.filter((i) => i.status === 'pendente').length,
       invalid: preparedBatch.filter((i) => i.status === 'invalida').length,
       duplicates: preparedBatch.filter((i) => i.status === 'duplicada').length,
+    };
+  }, [preparedBatch]);
+
+  // Resumo estatístico detalhado da validação de rede
+  const networkSummary = useMemo(() => {
+    if (!preparedBatch) return null;
+    const validItems = preparedBatch.filter((i) => i.status === 'pendente');
+    const mediaCompatible = validItems.filter((i) => i.networkStatus === 'midia_compativel').length;
+    const serverConnected = validItems.filter((i) => i.networkStatus === 'servidor_conectado').length;
+    const accessDeniedOrExpired = validItems.filter((i) => i.networkStatus === 'acesso_negado_ou_expirado').length;
+    const ssrfBlocked = validItems.filter((i) => i.networkStatus === 'bloqueado_ssrf').length;
+    const networkError = validItems.filter((i) => i.networkStatus === 'erro_rede').length;
+    const inconclusive = validItems.filter((i) => i.networkStatus === 'inconclusivo').length;
+    const validating = validItems.filter((i) => i.networkStatus === 'validando').length;
+    const unvalidated = validItems.filter((i) => !i.networkStatus || i.networkStatus === 'nao_iniciada').length;
+    const totalValidated = validItems.filter(
+      (i) => i.networkStatus && i.networkStatus !== 'nao_iniciada' && i.networkStatus !== 'validando'
+    ).length;
+    const failedOrInconclusive = accessDeniedOrExpired + networkError + inconclusive;
+
+    return {
+      totalToValidate: validItems.length,
+      totalValidated,
+      mediaCompatible,
+      serverConnected,
+      accessDeniedOrExpired,
+      ssrfBlocked,
+      networkError,
+      inconclusive,
+      validating,
+      unvalidated,
+      failedOrInconclusive,
     };
   }, [preparedBatch]);
 
@@ -136,6 +274,13 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
 
   // Preparar a fila local analisando sintaxe e duplicatas
   const handlePrepareBatch = () => {
+    if (isValidating) {
+      abortControllerRef.current?.abort();
+      setIsValidating(false);
+      isQueueRunningRef.current = false;
+    }
+    setCancellationNotice(null);
+
     const lines = rawUrlsText.split('\n');
     const validLinesWithIndex: { originalLineNumber: number; rawUrl: string }[] = [];
 
@@ -171,6 +316,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
           statusMessage: error || 'Sintaxe inválida (apenas HTTP/HTTPS suportados)',
           seriesTitle: currentSeries,
           seasonNumber,
+          networkStatus: 'nao_iniciada',
         };
       }
 
@@ -187,6 +333,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
           statusMessage: 'URL repetida no próprio lote',
           seriesTitle: currentSeries,
           seasonNumber,
+          networkStatus: 'nao_iniciada',
         };
       }
 
@@ -198,21 +345,31 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
         rawUrl: entry.rawUrl,
         sanitizedUrl: normalized,
         status: 'pendente',
-        statusMessage: 'Sintaxe válida (Aguardando etapa de rede/persistência)',
+        statusMessage: 'Sintaxe válida (Aguardando validação de rede)',
         seriesTitle: currentSeries,
         seasonNumber,
+        networkStatus: 'nao_iniciada',
       };
     });
 
     setPreparedBatch(queueItems);
+    setExpandedDiagnostics({});
   };
 
   const handleResetPreparedBatch = () => {
+    if (isValidating) {
+      abortControllerRef.current?.abort();
+      setIsValidating(false);
+      isQueueRunningRef.current = false;
+    }
     setPreparedBatch(null);
+    setCancellationNotice(null);
+    setExpandedDiagnostics({});
   };
 
   // Modelos de teste rápido para facilidade no celular e desktop (preenchimento seguro e previsível)
   const handleLoadSampleBatch = (count: number) => {
+    if (isValidating) return;
     if (!seriesTitle.trim()) {
       setSeriesTitle('Série de Treinamento 2026');
     }
@@ -223,12 +380,249 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
     }).join('\n');
     setRawUrlsText(sampleUrls);
     setPreparedBatch(null);
+    setCancellationNotice(null);
   };
 
   const handleClearUrls = () => {
+    if (isValidating) return;
     setRawUrlsText('');
     setPreparedBatch(null);
+    setCancellationNotice(null);
   };
+
+  // Motor central de validação de rede: concorrência máxima de 2 requisições simultâneas
+  const executeBatchValidation = useCallback(
+    async (targetIndices?: number[]) => {
+      if (isQueueRunningRef.current) return;
+      if (!preparedBatch || preparedBatch.length === 0) return;
+
+      const batchSnapshot = preparedBatch;
+
+      let indicesToValidate: number[] = [];
+      if (targetIndices && targetIndices.length > 0) {
+        indicesToValidate = targetIndices.filter(
+          (idx) => batchSnapshot[idx] && batchSnapshot[idx].status === 'pendente'
+        );
+      } else {
+        // Valida todos os itens pendentes da análise local (ignora estritamente inválidas e duplicadas)
+        indicesToValidate = batchSnapshot
+          .map((item, idx) => (item.status === 'pendente' ? idx : -1))
+          .filter((idx) => idx !== -1);
+      }
+
+      if (indicesToValidate.length === 0) return;
+
+      isQueueRunningRef.current = true;
+      setIsValidating(true);
+      setCancellationNotice(null);
+      setValidationProgress({ completed: 0, total: indicesToValidate.length });
+
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      // Marca visualmente os itens selecionados como 'validando'
+      setPreparedBatch((prev) => {
+        if (!prev) return null;
+        return prev.map((item, idx) => {
+          if (indicesToValidate.includes(idx)) {
+            return {
+              ...item,
+              networkStatus: 'validando',
+              networkResult: undefined,
+              networkError: undefined,
+            };
+          }
+          return item;
+        });
+      });
+
+      let nextQueuePointer = 0;
+      let completedCount = 0;
+
+      const runWorker = async () => {
+        while (nextQueuePointer < indicesToValidate.length) {
+          if (abortController.signal.aborted) {
+            break;
+          }
+
+          const queuePointer = nextQueuePointer++;
+          if (queuePointer >= indicesToValidate.length) {
+            break;
+          }
+
+          const itemIndex = indicesToValidate[queuePointer];
+          const itemToValidate = batchSnapshot[itemIndex];
+          if (!itemToValidate) continue;
+
+          let netStatus: NetworkValidationStatus = 'inconclusivo';
+          let netResult: NetworkValidationDetail | undefined = undefined;
+          let netError: string | undefined = undefined;
+
+          try {
+            const response = await fetch('/api/validate-url', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ url: itemToValidate.rawUrl }),
+              signal: abortController.signal,
+            });
+
+            let data: any = null;
+            try {
+              data = await response.json();
+            } catch {
+              netStatus = 'inconclusivo';
+              netError = `Resposta não formatada em JSON (HTTP ${response.status}).`;
+            }
+
+            if (response.ok && data) {
+              const diagLevel = data.diagnostic?.level;
+              if (diagLevel === 'midia_compativel') {
+                netStatus = 'midia_compativel';
+              } else if (diagLevel === 'servidor_conectado') {
+                netStatus = 'servidor_conectado';
+              } else if (diagLevel === 'acesso_negado_ou_expirado') {
+                netStatus = 'acesso_negado_ou_expirado';
+              } else if (diagLevel === 'bloqueado_ssrf') {
+                netStatus = 'bloqueado_ssrf';
+              } else if (diagLevel === 'erro_rede') {
+                netStatus = 'erro_rede';
+              } else if (diagLevel === 'sintaxe_invalida') {
+                netStatus = 'inconclusivo';
+              } else {
+                netStatus = 'inconclusivo';
+              }
+
+              netResult = {
+                httpStatus: data.httpStatus,
+                httpStatusText: data.httpStatusText,
+                contentType: data.contentType,
+                contentLength: data.contentLength,
+                isMediaCompatible: Boolean(data.isMediaCompatible),
+                mediaTypeDetected: data.mediaTypeDetected,
+                supportsRangeRequests: Boolean(data.supportsRangeRequests),
+                timingMs: data.timingMs ?? 0,
+                truncated: data.truncated,
+                diagnosticLevel: diagLevel || 'inconclusivo',
+                diagnosticMessage:
+                  data.diagnostic?.message || 'Sem mensagem diagnóstica.',
+              };
+            } else if (data && data.error) {
+              if (response.status === 429) {
+                netStatus = 'inconclusivo';
+                netError = `${data.error} (Você pode repetir a validação em instantes).`;
+              } else if (response.status === 400) {
+                netStatus = 'inconclusivo';
+                netError = data.error;
+              } else {
+                netStatus = 'erro_rede';
+                netError = data.error;
+              }
+            } else {
+              netStatus = 'erro_rede';
+              netError = `Erro HTTP ${response.status} ao validar na API.`;
+            }
+          } catch (err: any) {
+            if (err.name === 'AbortError' || abortController.signal.aborted) {
+              netStatus = 'inconclusivo';
+              netError = 'Validação cancelada pelo usuário.';
+            } else {
+              netStatus = 'erro_rede';
+              netError = err.message || 'Falha de conexão com a API de validação.';
+            }
+          }
+
+          if (!isMountedRef.current) return;
+
+          completedCount++;
+          setValidationProgress({
+            completed: completedCount,
+            total: indicesToValidate.length,
+          });
+
+          setPreparedBatch((prev) => {
+            if (!prev) return null;
+            return prev.map((item, idx) => {
+              if (idx === itemIndex) {
+                return {
+                  ...item,
+                  networkStatus: netStatus,
+                  networkResult: netResult,
+                  networkError: netError,
+                };
+              }
+              return item;
+            });
+          });
+        }
+      };
+
+      // Concorrência estrita: máximo de 2 workers simultâneos
+      const workerCount = Math.min(2, indicesToValidate.length);
+      const workerPromises: Promise<void>[] = [];
+      for (let w = 0; w < workerCount; w++) {
+        workerPromises.push(runWorker());
+      }
+
+      await Promise.all(workerPromises);
+
+      if (!isMountedRef.current) return;
+
+      if (abortController.signal.aborted) {
+        setPreparedBatch((prev) => {
+          if (!prev) return null;
+          return prev.map((item) => {
+            if (item.networkStatus === 'validando') {
+              return {
+                ...item,
+                networkStatus: 'inconclusivo',
+                networkError: 'Cancelado antes da execução.',
+              };
+            }
+            return item;
+          });
+        });
+        setCancellationNotice(
+          'Fila de validação cancelada pelo usuário. Novas requisições foram interrompidas; requisições já transmitidas ao servidor concluem de forma segura.'
+        );
+      }
+
+      isQueueRunningRef.current = false;
+      setIsValidating(false);
+      abortControllerRef.current = null;
+    },
+    [preparedBatch]
+  );
+
+  // Cancelar a fila de validação em andamento
+  const handleCancelValidation = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  }, []);
+
+  // Repetir apenas itens com falha de rede, acesso negado ou inconclusivos
+  const handleRetryFailedOrInconclusive = useCallback(() => {
+    if (!preparedBatch || isValidating) return;
+    const targetIndices = preparedBatch
+      .map((item, idx) => {
+        if (
+          item.status === 'pendente' &&
+          (item.networkStatus === 'erro_rede' ||
+            item.networkStatus === 'inconclusivo' ||
+            item.networkStatus === 'acesso_negado_ou_expirado')
+        ) {
+          return idx;
+        }
+        return -1;
+      })
+      .filter((idx) => idx !== -1);
+
+    if (targetIndices.length > 0) {
+      executeBatchValidation(targetIndices);
+    }
+  }, [preparedBatch, isValidating, executeBatchValidation]);
 
   // Formulário de Arquivo Local
   const [title, setTitle] = useState('');
@@ -774,18 +1168,18 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
       {/* ABA 2: URLs / TEMPORADAS (Controles interativos e pré-visualização sequencial em tempo real) */}
       {activeUploadTab === 'url_seasons' && (
         <div className="space-y-6">
-          {/* Aviso explicativo obrigatório: Próxima Etapa */}
-          <div className="p-4 bg-amber-950/30 border border-amber-800/40 rounded-xl text-xs text-amber-200 flex items-start gap-3">
-            <Info className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          {/* Aviso de Orientação Técnica: Validação de Lote e Rede */}
+          <div className="p-4 bg-indigo-950/30 border border-indigo-800/40 rounded-xl text-xs text-indigo-200 flex items-start gap-3">
+            <Info className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-semibold text-white flex items-center gap-2">
-                <span>Modo de Digitação & Teste de Estrutura</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Importação na Próxima Etapa
+                <span>Validação Estrutural e de Rede de Lotes de Episódios</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  API Ativa (/api/validate-url)
                 </span>
               </p>
               <p className="text-slate-300 leading-relaxed">
-                Você pode digitar ou colar títulos, escolher a temporada e inserir várias URLs (uma por linha) para testar a organização e a contagem sequencial de episódios no celular e no computador. A validação real de links, fila assíncrona e persistência no catálogo serão ativadas na próxima etapa mediante sua autorização.
+                Configure a obra e a temporada, insira as URLs (uma por linha) e clique em <strong>"Preparar Lote"</strong> para realizar a análise sintática e a detecção de duplicatas em memória. Com o lote preparado, use a ação <strong>"Validar URLs pela rede"</strong> para inspecionar disponibilidade, códigos HTTP e cabeçalhos de mídia com concorrência segura (máximo de 2 requisições simultâneas via backend).
               </p>
             </div>
           </div>
@@ -812,8 +1206,9 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                     type="text"
                     value={seriesTitle}
                     onChange={(e) => setSeriesTitle(e.target.value)}
+                    disabled={isValidating}
                     placeholder="Ex: Treinamento Corporativo Avançado"
-                    className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                    className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
 
@@ -824,7 +1219,8 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   <select
                     value={seasonNumber}
                     onChange={(e) => setSeasonNumber(Number(e.target.value))}
-                    className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                    disabled={isValidating}
+                    className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
                       <option key={num} value={num}>
@@ -848,11 +1244,12 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   rows={8}
                   value={rawUrlsText}
                   onChange={(e) => setRawUrlsText(e.target.value)}
+                  disabled={isValidating}
                   placeholder={`Cole aqui as URLs diretas, uma por linha:\nhttps://cdn.exemplo.com/videos/s01e01.mp4\nhttps://cdn.exemplo.com/videos/s01e02.mp4\nhttps://cdn.exemplo.com/videos/s01e03.mp4`}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg p-3 text-xs text-indigo-300 font-mono placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors resize-y leading-relaxed"
+                  className="w-full bg-[#181A24] border border-slate-700/80 rounded-lg p-3 text-xs text-indigo-300 font-mono placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors resize-y leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
                 />
               </div>
 
@@ -863,24 +1260,27 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleLoadSampleBatch(13)}
+                    disabled={isValidating}
                     title="Preenche a caixa com 13 URLs de teste sequenciais"
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
                   >
                     13 URLs
                   </button>
                   <button
                     type="button"
                     onClick={() => handleLoadSampleBatch(25)}
+                    disabled={isValidating}
                     title="Preenche a caixa com 25 URLs de teste sequenciais"
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
                   >
                     25 URLs
                   </button>
                   <button
                     type="button"
                     onClick={() => handleLoadSampleBatch(50)}
+                    disabled={isValidating}
                     title="Preenche a caixa com 50 URLs de teste sequenciais"
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition-colors active:scale-95 cursor-pointer"
                   >
                     50 URLs
                   </button>
@@ -889,8 +1289,9 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   <button
                     type="button"
                     onClick={handleClearUrls}
+                    disabled={isValidating}
                     title="Limpar todas as URLs da caixa"
-                    className="px-2 py-1 text-slate-400 hover:text-red-400 text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                    className="px-2 py-1 text-slate-400 hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Limpar Caixa</span>
@@ -903,7 +1304,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                 <button
                   type="button"
                   onClick={handlePrepareBatch}
-                  disabled={!rawUrlsText.trim()}
+                  disabled={isValidating || !rawUrlsText.trim()}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-98 cursor-pointer"
                 >
                   <Sparkles className="w-4 h-4 text-indigo-200" />
@@ -919,15 +1320,14 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                   <button
                     type="button"
                     onClick={handleResetPreparedBatch}
-                    className="px-3 py-2 text-slate-400 hover:text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-800 rounded-lg bg-slate-900/60"
+                    disabled={isValidating}
+                    className="px-3 py-2 text-slate-400 hover:text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-800 rounded-lg bg-slate-900/60"
                   >
                     <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
                     <span>Limpar Análise / Editar URLs</span>
                   </button>
                 )}
               </div>
-
-              {/* RESUMO DO LOTE PREPARADO (Quando o usuário clica em Preparar Lote) */}
               {preparedBatch && batchSummary && (
                 <div className="space-y-3 pt-2">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
@@ -986,6 +1386,175 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       </div>
                     </div>
                   </div>
+
+                  {/* BARRA DE AÇÕES DE VALIDAÇÃO DE REDE */}
+                  <div className="p-3.5 bg-[#141620] border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Ação Primária: Validar URLs pela rede */}
+                      <button
+                        type="button"
+                        onClick={() => executeBatchValidation()}
+                        disabled={isValidating || (batchSummary?.validPending ?? 0) === 0}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition-all shadow shadow-indigo-600/20 active:scale-98 cursor-pointer"
+                      >
+                        {isValidating ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        ) : (
+                          <Globe className="w-4 h-4 text-indigo-200" />
+                        )}
+                        <span>{isValidating ? 'Validando Fila...' : 'Validar URLs pela rede'}</span>
+                        {batchSummary && batchSummary.validPending > 0 && !isValidating && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-400/30 text-[10px] font-mono text-indigo-200">
+                            {batchSummary.validPending} {batchSummary.validPending === 1 ? 'URL' : 'URLs'}
+                          </span>
+                        )}
+                      </button>
+
+                      {/* Cancelar Fila em andamento */}
+                      {isValidating && (
+                        <button
+                          type="button"
+                          onClick={handleCancelValidation}
+                          className="px-3.5 py-2 bg-amber-950/70 hover:bg-amber-900 border border-amber-800/80 text-amber-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <StopCircle className="w-4 h-4 text-amber-400" />
+                          <span>Cancelar Fila</span>
+                        </button>
+                      )}
+
+                      {/* Repetir apenas falhas ou inconclusivos */}
+                      {!isValidating && (networkSummary?.failedOrInconclusive ?? 0) > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleRetryFailedOrInconclusive}
+                          className="px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-4 h-4 text-amber-400" />
+                          <span>Repetir Falhas e Inconclusivos</span>
+                          <span className="px-1.5 py-0.2 rounded-full bg-amber-950 border border-amber-600/40 text-[10px] font-mono">
+                            {networkSummary?.failedOrInconclusive}
+                          </span>
+                        </button>
+                      )}
+
+                      {/* Revalidar Lote Completo (quando já finalizado) */}
+                      {!isValidating && (networkSummary?.totalValidated ?? 0) > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => executeBatchValidation()}
+                          className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>Revalidar Tudo</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="text-[11px] font-mono text-slate-400 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      <span>Concorrência máx: 2 requisições</span>
+                    </div>
+                  </div>
+
+                  {/* Aviso de Cancelamento */}
+                  {cancellationNotice && (
+                    <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-xs text-amber-200 flex items-start gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-semibold">{cancellationNotice}</p>
+                        <p className="text-[11px] text-amber-300/80">
+                          O cancelamento no navegador encerra chamadas futuras. Requisições em trânsito no servidor concluem sem causar vazamento de recursos.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PAINEL DE PROGRESSO E MÉTRICAS DE REDE */}
+                  {(isValidating || (networkSummary && networkSummary.totalValidated > 0)) && (
+                    <div className="p-4 bg-[#141620] border border-slate-800 rounded-xl space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Wifi className="w-4 h-4 text-indigo-400" />
+                          <span className="text-xs font-semibold text-white">
+                            Progresso da Validação de Rede
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
+                          <span className="text-slate-400">
+                            {validationProgress.completed} de {validationProgress.total} processadas
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-indigo-950 border border-indigo-700/60 text-indigo-300 font-semibold">
+                            {Math.round(
+                              (validationProgress.completed / Math.max(1, validationProgress.total)) * 100
+                            )}
+                            %
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Barra de Progresso */}
+                      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-300"
+                          style={{
+                            width: `${Math.round(
+                              (validationProgress.completed / Math.max(1, validationProgress.total)) * 100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+
+                      {/* Métricas de Diagnóstico de Rede */}
+                      {networkSummary && (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-1">
+                          <div className="p-2 bg-emerald-950/20 border border-emerald-800/40 rounded-lg text-center">
+                            <div className="text-[10px] text-emerald-400 font-semibold truncate">Mídia Compatível</div>
+                            <div className="text-base font-bold text-emerald-300 font-mono mt-0.5">
+                              {networkSummary.mediaCompatible}
+                            </div>
+                          </div>
+                          <div className="p-2 bg-blue-950/20 border border-blue-800/40 rounded-lg text-center">
+                            <div className="text-[10px] text-blue-400 font-semibold truncate">Servidor Conectado</div>
+                            <div className="text-base font-bold text-blue-300 font-mono mt-0.5">
+                              {networkSummary.serverConnected}
+                            </div>
+                          </div>
+                          <div className="p-2 bg-amber-950/20 border border-amber-800/40 rounded-lg text-center">
+                            <div className="text-[10px] text-amber-400 font-semibold truncate">Acesso Negado</div>
+                            <div className="text-base font-bold text-amber-300 font-mono mt-0.5">
+                              {networkSummary.accessDeniedOrExpired}
+                            </div>
+                          </div>
+                          <div className="p-2 bg-rose-950/20 border border-rose-800/40 rounded-lg text-center">
+                            <div className="text-[10px] text-rose-400 font-semibold truncate">Bloqueio SSRF</div>
+                            <div className="text-base font-bold text-rose-300 font-mono mt-0.5">
+                              {networkSummary.ssrfBlocked}
+                            </div>
+                          </div>
+                          <div className="p-2 bg-red-950/20 border border-red-800/40 rounded-lg text-center">
+                            <div className="text-[10px] text-red-400 font-semibold truncate">Erro de Rede</div>
+                            <div className="text-base font-bold text-red-300 font-mono mt-0.5">
+                              {networkSummary.networkError}
+                            </div>
+                          </div>
+                          <div className="p-2 bg-slate-900 border border-slate-700/60 rounded-lg text-center">
+                            <div className="text-[10px] text-slate-300 font-semibold truncate">Inconclusivo</div>
+                            <div className="text-base font-bold text-slate-200 font-mono mt-0.5">
+                              {networkSummary.inconclusive}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Aviso Técnico Essencial: Cabeçalhos vs Reprodução Real */}
+                      <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg flex items-start gap-2 text-[11px] text-slate-300">
+                        <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>Escopo da Validação:</strong> A validação remota confirma exclusivamente resposta HTTP, disponibilidade do servidor e cabeçalhos de mídia (Content-Type e Range). A reprodução efetiva só pode ser confirmada quando o vídeo for testado e decodificado no player da aplicação.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -999,9 +1568,27 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                         Fila de Pré-Processamento do Lote
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono text-slate-400">
-                      Análise sintática local concluída
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
+                        Análise sintática local e validação de rede integrada
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleExpandAllDiagnostics}
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-[10px] transition-colors cursor-pointer"
+                        >
+                          Expandir todos
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCollapseAllDiagnostics}
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-[10px] transition-colors cursor-pointer"
+                        >
+                          Recolher todos
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   {preparedBatch.length === 0 ? (
@@ -1009,68 +1596,476 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                       Nenhuma linha com conteúdo foi encontrada para analisar.
                     </div>
                   ) : (
-                    <div className="space-y-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
+                    <div className="space-y-3 max-h-96 overflow-y-auto pr-1 custom-scrollbar">
                       {preparedBatch.map((item, idx) => {
                         const epNumberStr = String(item.episodeNumber).padStart(2, '0');
+                        const { display: safeDisplayUrl, hasTokens } = getSafeDisplayUrl(item.rawUrl);
+                        const hostOnly = (() => {
+                          try {
+                            return new URL(item.rawUrl).hostname;
+                          } catch {
+                            return 'URL malformada';
+                          }
+                        })();
+                        const isExpanded = Boolean(expandedDiagnostics[item.episodeNumber]);
+
                         return (
                           <div
                             key={`queue-item-${item.originalLineNumber}-${idx}`}
-                            className={`p-3 rounded-lg border text-xs space-y-1.5 transition-colors ${
-                              item.status === 'pendente'
-                                ? 'bg-[#181A24] border-slate-800 hover:border-slate-700'
-                                : item.status === 'invalida'
-                                ? 'bg-red-950/20 border-red-800/50 hover:border-red-700'
-                                : 'bg-amber-950/20 border-amber-800/50 hover:border-amber-700'
+                            className={`p-3.5 rounded-xl border text-xs space-y-2.5 transition-colors ${
+                              item.status === 'invalida'
+                                ? 'bg-red-950/15 border-red-800/40'
+                                : item.status === 'duplicada'
+                                ? 'bg-amber-950/15 border-amber-800/40'
+                                : item.networkStatus === 'midia_compativel'
+                                ? 'bg-[#151a24] border-emerald-800/40'
+                                : item.networkStatus === 'servidor_conectado'
+                                ? 'bg-[#151a24] border-blue-800/40'
+                                : item.networkStatus === 'acesso_negado_ou_expirado'
+                                ? 'bg-[#1a1620] border-amber-800/40'
+                                : item.networkStatus === 'bloqueado_ssrf'
+                                ? 'bg-[#1e141a] border-rose-800/40'
+                                : item.networkStatus === 'erro_rede'
+                                ? 'bg-[#1e1418] border-red-800/40'
+                                : item.networkStatus === 'validando'
+                                ? 'bg-[#161828] border-indigo-800/60'
+                                : 'bg-[#181A24] border-slate-800'
                             }`}
                           >
+                            {/* Linha 1: Identificação do Episódio, Status, Código HTTP e Botão Ver Diagnóstico */}
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                               <div className="flex items-center gap-2">
-                                <span className="px-1.5 py-0.5 bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-mono text-[10px] font-bold rounded">
+                                <span className="px-2 py-0.5 bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-mono text-[10px] font-bold rounded">
                                   EP {epNumberStr}
                                 </span>
                                 <span className="font-semibold text-white text-xs">
-                                  {item.seriesTitle} • T{item.seasonNumber}E{epNumberStr}
+                                  {item.seriesTitle ? `${item.seriesTitle} • ` : ''}T{item.seasonNumber}E{epNumberStr}
                                 </span>
                               </div>
 
-                              <div>
-                                {item.status === 'pendente' && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-700/60 text-emerald-300 font-mono text-[10px] font-semibold">
-                                    <Clock className="w-3 h-3 text-emerald-400" />
-                                    <span>Pendente</span>
-                                  </span>
-                                )}
+                              {/* Badges de Status, Código HTTP e Ações de Diagnóstico */}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {/* Badges de Estado */}
                                 {item.status === 'invalida' && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-950/60 border border-red-700/60 text-red-300 font-mono text-[10px] font-semibold">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-950/80 border border-red-700 text-red-300 font-mono text-[10px] font-semibold">
                                     <AlertTriangle className="w-3 h-3 text-red-400" />
-                                    <span>URL inválida</span>
+                                    <span>Sintaxe Inválida</span>
                                   </span>
                                 )}
                                 {item.status === 'duplicada' && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-700/60 text-amber-300 font-mono text-[10px] font-semibold">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/80 border border-amber-700 text-amber-300 font-mono text-[10px] font-semibold">
                                     <AlertCircle className="w-3 h-3 text-amber-400" />
-                                    <span>Duplicada no lote</span>
+                                    <span>Duplicada</span>
                                   </span>
                                 )}
+
+                                {item.status === 'pendente' && (
+                                  <>
+                                    {!item.networkStatus || item.networkStatus === 'nao_iniciada' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-400 font-mono text-[10px]">
+                                        <Clock className="w-3 h-3 text-slate-400" />
+                                        <span>Aguardando rede</span>
+                                      </span>
+                                    ) : item.networkStatus === 'validando' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-700 text-indigo-300 font-mono text-[10px] font-semibold animate-pulse">
+                                        <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+                                        <span>Validando na rede...</span>
+                                      </span>
+                                    ) : item.networkStatus === 'midia_compativel' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-600 text-emerald-300 font-mono text-[10px] font-bold shadow-sm shadow-emerald-950/50">
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                        <span>Mídia Compatível</span>
+                                      </span>
+                                    ) : item.networkStatus === 'acesso_negado_ou_expirado' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/80 border border-amber-600 text-amber-300 font-mono text-[10px] font-bold shadow-sm shadow-amber-950/50">
+                                        <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                        <span>Acesso Negado</span>
+                                      </span>
+                                    ) : item.networkStatus === 'servidor_conectado' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-950/80 border border-blue-700 text-blue-300 font-mono text-[10px] font-semibold">
+                                        <Info className="w-3 h-3 text-blue-400" />
+                                        <span>Servidor Conectado</span>
+                                      </span>
+                                    ) : item.networkStatus === 'bloqueado_ssrf' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-950/80 border border-rose-700 text-rose-300 font-mono text-[10px] font-bold">
+                                        <ShieldAlert className="w-3 h-3 text-rose-400" />
+                                        <span>Bloqueio SSRF</span>
+                                      </span>
+                                    ) : item.networkStatus === 'erro_rede' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-950/80 border border-red-700 text-red-300 font-mono text-[10px] font-semibold">
+                                        <XCircle className="w-3 h-3 text-red-400" />
+                                        <span>Erro de Rede</span>
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900 border border-amber-700 text-amber-300 font-mono text-[10px] font-semibold">
+                                        <AlertCircle className="w-3 h-3 text-amber-400" />
+                                        <span>Inconclusivo</span>
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+
+                                {/* Código HTTP exibido de forma imediata quando disponível */}
+                                {item.networkResult?.httpStatus !== undefined && (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[10px] font-semibold">
+                                    HTTP {item.networkResult.httpStatus}
+                                  </span>
+                                )}
+
+                                {/* Botão Acessível: Ver / Ocultar Diagnóstico */}
+                                <button
+                                  type="button"
+                                  aria-expanded={isExpanded}
+                                  aria-controls={`diagnostic-details-ep-${item.episodeNumber}`}
+                                  aria-label={
+                                    isExpanded
+                                      ? `Recolher diagnóstico detalhado do episódio ${epNumberStr}`
+                                      : `Ver diagnóstico detalhado do episódio ${epNumberStr}`
+                                  }
+                                  onClick={() => toggleDiagnostic(item.episodeNumber)}
+                                  className={`px-2.5 py-1 text-[11px] rounded-lg border font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
+                                    isExpanded
+                                      ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/50 hover:bg-indigo-600/30'
+                                      : 'bg-slate-900 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
+                                  }`}
+                                >
+                                  <span>{isExpanded ? 'Ocultar diagnóstico' : 'Ver diagnóstico'}</span>
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-3.5 h-3.5 text-indigo-400" />
+                                  ) : (
+                                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                                  )}
+                                </button>
+
+                                {/* Ação individual de repetição para itens falhos */}
+                                {!isValidating &&
+                                  item.status === 'pendente' &&
+                                  (item.networkStatus === 'erro_rede' ||
+                                    item.networkStatus === 'inconclusivo' ||
+                                    item.networkStatus === 'acesso_negado_ou_expirado') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => executeBatchValidation([idx])}
+                                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-amber-300 text-[10px] rounded-lg border border-amber-800/50 flex items-center gap-1 transition-colors cursor-pointer"
+                                      title="Repetir validação exclusivamente para este episódio"
+                                    >
+                                      <RotateCcw className="w-3 h-3 text-amber-400" />
+                                      <span>Revalidar</span>
+                                    </button>
+                                  )}
                               </div>
                             </div>
 
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] font-mono text-slate-400">
-                              <span className="truncate max-w-full sm:max-w-[420px] bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800/60">
-                                Linha {item.originalLineNumber}: {item.rawUrl}
+                            {/* Linha 2: Exibição Segura da URL e Hostname (sem tokens/senhas/hashes) */}
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+                              <span className="text-slate-400">Host:</span>
+                              <span className="text-white bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-semibold">
+                                {hostOnly}
                               </span>
-                              <span
-                                className={`text-[10px] ${
-                                  item.status === 'pendente'
-                                    ? 'text-emerald-400/90'
-                                    : item.status === 'invalida'
-                                    ? 'text-red-400/90'
-                                    : 'text-amber-400/90'
-                                }`}
-                              >
-                                {item.statusMessage}
+                              <span className="text-slate-500">•</span>
+                              <span className="text-slate-300 truncate max-w-full sm:max-w-md bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800/60">
+                                {safeDisplayUrl}
+                              </span>
+                              {hasTokens && (
+                                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-sans">
+                                  Tokens / Query ocultados por segurança
+                                </span>
+                              )}
+                              <span className="text-[10px] text-slate-500 font-sans ml-auto">
+                                Linha {item.originalLineNumber}
                               </span>
                             </div>
+
+                            {/* Diagnóstico Resumido (Visível para contexto rápido) */}
+                            <div
+                              className={`p-2.5 rounded-lg border text-[11px] leading-relaxed ${
+                                item.status === 'invalida'
+                                  ? 'bg-red-950/30 border-red-800/50 text-red-200'
+                                  : item.status === 'duplicada'
+                                  ? 'bg-amber-950/30 border-amber-800/50 text-amber-200'
+                                  : item.networkStatus === 'midia_compativel'
+                                  ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-200'
+                                  : item.networkStatus === 'servidor_conectado'
+                                  ? 'bg-blue-950/30 border-blue-800/50 text-blue-200'
+                                  : item.networkStatus === 'acesso_negado_ou_expirado'
+                                  ? 'bg-amber-950/30 border-amber-800/50 text-amber-200'
+                                  : item.networkStatus === 'bloqueado_ssrf'
+                                  ? 'bg-rose-950/30 border-rose-800/50 text-rose-200'
+                                  : item.networkStatus === 'erro_rede'
+                                  ? 'bg-red-950/30 border-red-800/50 text-red-200'
+                                  : item.networkStatus === 'validando'
+                                  ? 'bg-indigo-950/30 border-indigo-800/50 text-indigo-200'
+                                  : item.networkStatus === 'inconclusivo'
+                                  ? 'bg-amber-950/30 border-amber-800/50 text-amber-200'
+                                  : 'bg-slate-900/60 border-slate-800 text-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between font-semibold mb-0.5">
+                                <span>
+                                  {item.status !== 'pendente'
+                                    ? 'Diagnóstico Local:'
+                                    : item.networkResult || item.networkError
+                                    ? 'Diagnóstico de Rede:'
+                                    : 'Estado da URL:'}
+                                </span>
+                                {item.networkResult?.timingMs !== undefined && item.networkResult.timingMs > 0 && (
+                                  <span className="font-mono text-[10px] opacity-80">
+                                    Resposta: {item.networkResult.timingMs}ms
+                                  </span>
+                                )}
+                              </div>
+                              <p>
+                                {item.status === 'invalida'
+                                  ? item.statusMessage
+                                  : item.status === 'duplicada'
+                                  ? 'Esta URL é idêntica a outro item anterior no mesmo lote. Foi ignorada para evitar redundância e consumo de conexões.'
+                                  : item.networkResult?.diagnosticMessage
+                                  ? item.networkResult.diagnosticMessage
+                                  : item.networkError
+                                  ? item.networkError
+                                  : item.networkStatus === 'validando'
+                                  ? 'Efetuando requisição segura para a API /api/validate-url com prazo máximo de 4 segundos...'
+                                  : 'Sintaxe local validada com sucesso. Clique em "Validar URLs pela rede" para checar a disponibilidade no servidor remoto.'}
+                              </p>
+                            </div>
+
+                            {/* ÁREA DE DIAGNÓSTICO INDIVIDUAL EXPANSÍVEL (Requisitos 1, 2, 3, 4 e 5) */}
+                            {isExpanded && (
+                              <div
+                                id={`diagnostic-details-ep-${item.episodeNumber}`}
+                                className="pt-3 mt-2 border-t border-slate-800/80 space-y-3"
+                              >
+                                {/* Identificação Explícita de Classificação (Requisito 5) */}
+                                {item.networkStatus === 'midia_compativel' && (
+                                  <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-600/60 flex items-start gap-2.5 text-emerald-200">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-emerald-300">
+                                        Classificação: Mídia Compatível
+                                      </div>
+                                      <p className="text-[11px] text-emerald-200/90 mt-0.5 leading-relaxed">
+                                        O servidor remoto respondeu positivamente e os cabeçalhos confirmam conteúdo de streaming de vídeo compatível.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.networkStatus === 'acesso_negado_ou_expirado' && (
+                                  <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-600/60 flex items-start gap-2.5 text-amber-200">
+                                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-amber-300">
+                                        Classificação: Acesso Negado
+                                      </div>
+                                      <p className="text-[11px] text-amber-200/90 mt-0.5 leading-relaxed">
+                                        O servidor remoto retornou código de recusa ou recurso não encontrado (HTTP {item.networkResult?.httpStatus || '401/403/404'}). Verifique se o link requer autenticação, token ou se expirou.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.networkStatus === 'bloqueado_ssrf' && (
+                                  <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-600/60 flex items-start gap-2.5 text-rose-200">
+                                    <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-rose-300">
+                                        Classificação: Bloqueio de Segurança (SSRF)
+                                      </div>
+                                      <p className="text-[11px] text-rose-200/90 mt-0.5 leading-relaxed">
+                                        Requisição bloqueada preventivamente pela política de segurança. Destinos internos, loopback, redes privadas ou metadados de nuvem são proibidos.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.networkStatus === 'erro_rede' && (
+                                  <div className="p-3 rounded-lg bg-red-950/40 border border-red-600/60 flex items-start gap-2.5 text-red-200">
+                                    <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-red-300">
+                                        Classificação: Erro de Rede
+                                      </div>
+                                      <p className="text-[11px] text-red-200/90 mt-0.5 leading-relaxed">
+                                        Falha na conexão com o servidor remoto, erro de resolução DNS ou esgotamento do tempo limite integral de 4 segundos.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.networkStatus === 'servidor_conectado' && (
+                                  <div className="p-3 rounded-lg bg-blue-950/40 border border-blue-600/60 flex items-start gap-2.5 text-blue-200">
+                                    <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-blue-300">
+                                        Classificação: Servidor Conectado (Conteúdo Não-Vídeo)
+                                      </div>
+                                      <p className="text-[11px] text-blue-200/90 mt-0.5 leading-relaxed">
+                                        O servidor remoto respondeu positivamente, mas o cabeçalho Content-Type não corresponde a um fluxo de vídeo reconhecido.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.networkStatus === 'inconclusivo' && (
+                                  <div className="p-3 rounded-lg bg-slate-900 border border-amber-700/60 flex items-start gap-2.5 text-amber-200">
+                                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-amber-300">
+                                        Classificação: Resultado Inconclusivo
+                                      </div>
+                                      <p className="text-[11px] text-amber-200/90 mt-0.5 leading-relaxed">
+                                        A resposta da API ou do servidor não permitiu uma validação conclusiva. Você pode tentar revalidar este episódio individualmente.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.status === 'invalida' && (
+                                  <div className="p-3 rounded-lg bg-red-950/40 border border-red-600/60 flex items-start gap-2.5 text-red-200">
+                                    <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-red-300">
+                                        Classificação: Sintaxe Inválida
+                                      </div>
+                                      <p className="text-[11px] text-red-200/90 mt-0.5 leading-relaxed">
+                                        A URL não atende aos padrões válidos de formatação HTTP/HTTPS.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {item.status === 'duplicada' && (
+                                  <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-600/60 flex items-start gap-2.5 text-amber-200">
+                                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-amber-300">
+                                        Classificação: URL Duplicada
+                                      </div>
+                                      <p className="text-[11px] text-amber-200/90 mt-0.5 leading-relaxed">
+                                        Esta URL já consta em outra linha deste lote. Foi ignorada para evitar redundância.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {(!item.networkStatus || item.networkStatus === 'nao_iniciada') && item.status === 'pendente' && (
+                                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-700/60 flex items-start gap-2.5 text-slate-300">
+                                    <Clock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                                    <div>
+                                      <div className="font-bold text-xs text-slate-200">
+                                        Classificação: Aguardando Validação de Rede
+                                      </div>
+                                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                                        A sintaxe local foi aprovada. Clique no botão &quot;Validar URLs pela rede&quot; para enviar a requisição de checagem.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Grid de Metadados Técnicos Reais da API (Requisitos 3 e 4) */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                                  {/* 1. Status HTTP */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Status HTTP
+                                    </div>
+                                    <div className="text-white font-mono font-semibold mt-1">
+                                      {item.networkResult?.httpStatus !== undefined
+                                        ? `HTTP ${item.networkResult.httpStatus}${
+                                            item.networkResult.httpStatusText
+                                              ? ` (${item.networkResult.httpStatusText})`
+                                              : ''
+                                          }`
+                                        : 'Não informado'}
+                                    </div>
+                                  </div>
+
+                                  {/* 2. Content-Type */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Content-Type
+                                    </div>
+                                    <div className="text-indigo-300 font-mono font-semibold mt-1 truncate">
+                                      {item.networkResult?.contentType || 'Não informado'}
+                                    </div>
+                                  </div>
+
+                                  {/* 3. Tipo de Mídia */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Tipo de Mídia
+                                    </div>
+                                    <div className="text-emerald-300 font-medium mt-1">
+                                      {item.networkResult?.mediaTypeDetected || 'Não informado'}
+                                    </div>
+                                  </div>
+
+                                  {/* 4. Content-Length */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Content-Length
+                                    </div>
+                                    <div className="text-slate-200 font-mono font-semibold mt-1">
+                                      {item.networkResult?.contentLength !== undefined &&
+                                      item.networkResult.contentLength > 0
+                                        ? `${formatBytes(
+                                            item.networkResult.contentLength
+                                          )} (${item.networkResult.contentLength.toLocaleString('pt-BR')} bytes)`
+                                        : 'Não informado'}
+                                    </div>
+                                  </div>
+
+                                  {/* 5. Accept-Ranges */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Accept-Ranges
+                                    </div>
+                                    <div className="text-slate-200 font-mono font-semibold mt-1">
+                                      {item.networkResult !== undefined
+                                        ? item.networkResult.supportsRangeRequests
+                                          ? 'bytes (Suporte a reprodução fracionada / Seek)'
+                                          : 'Sem suporte a Range'
+                                        : 'Não informado'}
+                                    </div>
+                                  </div>
+
+                                  {/* 6. Indicação de resposta truncada */}
+                                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                      Resposta Truncada
+                                    </div>
+                                    <div className="text-slate-200 font-medium mt-1">
+                                      {item.networkResult?.truncated !== undefined
+                                        ? item.networkResult.truncated
+                                          ? 'Sim (limitado com segurança a 64KB)'
+                                          : 'Não (resposta completa)'
+                                        : 'Não informado'}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* 7. Mensagem de Diagnóstico Detalhada (Requisitos 3 e 4) */}
+                                <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1">
+                                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                    <span>Mensagem de Diagnóstico</span>
+                                    {item.networkResult?.timingMs !== undefined &&
+                                      item.networkResult.timingMs > 0 && (
+                                        <span className="font-mono text-slate-400">
+                                          Tempo de resposta: {item.networkResult.timingMs}ms
+                                        </span>
+                                      )}
+                                  </div>
+                                  <div className="text-slate-200 text-xs leading-relaxed font-sans">
+                                    {item.networkResult?.diagnosticMessage ||
+                                      (item.status === 'invalida'
+                                        ? item.statusMessage
+                                        : item.status === 'duplicada'
+                                        ? 'URL duplicada no mesmo lote (ignorada).'
+                                        : item.networkError || 'Não informado')}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1079,7 +2074,7 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
 
                   <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
                     <span>
-                      Nota de Integridade: Somente a sintaxe foi analisada. Nenhuma requisição HTTP foi feita.
+                      Nota de Integridade: Todas as verificações de rede passam exclusivamente pelo backend seguro (/api/validate-url).
                     </span>
                   </div>
                 </div>
@@ -1152,38 +2147,46 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
               <div className="bg-[#12131A] p-5 rounded-2xl border border-slate-800 space-y-3">
                 <h2 className="text-sm font-bold text-white uppercase tracking-wider text-slate-300 flex items-center gap-2">
                   <Boxes className="w-4 h-4 text-amber-400" />
-                  <span>Pipeline em Fila</span>
+                  <span>Pipeline em Fila Ativo</span>
                 </h2>
 
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Para garantir que o navegador não congele ao processar lotes extensos (ex: 13, 25 ou 50 URLs), a importação seguirá estes princípios técnicos:
+                  Para garantir integridade, segurança e evitar travamentos na interface, a validação de URLs segue estas garantias técnicas:
                 </p>
 
                 <ul className="text-xs text-slate-300 space-y-2 border-t border-slate-800 pt-3">
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-400 font-bold">•</span>
-                    <span><strong>Concorrência Máxima:</strong> 2 a 3 verificações simultâneas de cabeçalho HTTP (próxima etapa).</span>
+                    <span><strong>Concorrência Segura:</strong> No máximo 2 requisições simultâneas via <code>POST /api/validate-url</code>.</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-400 font-bold">•</span>
-                    <span><strong>Antiduplicação:</strong> Checagem imediata contra URLs já presentes no próprio lote.</span>
+                    <span><strong>Antiduplicação Local:</strong> URLs repetidas no lote são bloqueadas antes do envio à rede.</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-400 font-bold">•</span>
-                    <span><strong>Validação Sintática:</strong> Aceita estritamente esquemas HTTP e HTTPS.</span>
+                    <span><strong>Proteção SSRF Ativa:</strong> Bloqueio conservador de IPs locais, privados, metadados e rebinding de DNS.</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-400 font-bold">•</span>
-                    <span><strong>Cadastro Atômico:</strong> Somente links confirmados serão persistidos na fase de cadastro.</span>
+                    <span><strong>Leitura Limitada a 64KB:</strong> Servidores que ignoram Range são truncados sem baixar vídeos completos.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-400 font-bold">•</span>
+                    <span><strong>Validação vs. Reprodução:</strong> Confirmação de cabeçalhos não atesta decodificação até teste no player.</span>
                   </li>
                 </ul>
 
                 <div className="mt-4 pt-3 border-t border-slate-800 text-center space-y-2">
                   <div className="text-[11px] font-mono text-slate-400 bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
                     Estado:{' '}
-                    {preparedBatch ? (
+                    {isValidating ? (
+                      <span className="text-indigo-400 font-semibold animate-pulse">
+                        Validando Fila ({validationProgress.completed}/{validationProgress.total})
+                      </span>
+                    ) : preparedBatch ? (
                       <span className="text-emerald-400 font-semibold">
-                        Lote Analisado ({batchSummary?.validPending} válidos)
+                        Lote Pronto ({batchSummary?.validPending} válidos)
                       </span>
                     ) : (
                       <span className="text-amber-400 font-semibold">
@@ -1192,7 +2195,11 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                     )}
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Análise em memória. Nenhuma requisição de rede ou persistência nesta fase.
+                    {isValidating
+                      ? 'Requisições HTTP em execução com controle de concorrência.'
+                      : networkSummary && networkSummary.totalValidated > 0
+                      ? `Validação de rede concluída: ${networkSummary.mediaCompatible} com mídia compatível.`
+                      : 'Análise sintática local pronta. Validação de rede disponível.'}
                   </p>
                 </div>
               </div>
