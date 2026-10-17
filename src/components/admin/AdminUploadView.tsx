@@ -556,14 +556,18 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
             });
 
             let data: any = null;
+            let jsonParseFailed = false;
             try {
               data = await response.json();
             } catch {
-              netStatus = 'inconclusivo';
-              netError = `Resposta não formatada em JSON (HTTP ${response.status}).`;
+              jsonParseFailed = true;
             }
 
-            if (response.ok && data) {
+            if (response.status === 404) {
+              netStatus = 'erro_rede';
+              netError =
+                'Endpoint de validação não encontrado (HTTP 404). Verifique se o serviço "/api/validate-url" está configurado e disponível no servidor.';
+            } else if (response.ok && data) {
               const diagLevel = data.diagnostic?.level;
               if (diagLevel === 'midia_compativel') {
                 netStatus = 'midia_compativel';
@@ -606,6 +610,9 @@ export const AdminUploadView: React.FC<AdminUploadViewProps> = ({
                 netStatus = 'erro_rede';
                 netError = data.error;
               }
+            } else if (jsonParseFailed) {
+              netStatus = 'inconclusivo';
+              netError = `Resposta não formatada em JSON (HTTP ${response.status}).`;
             } else {
               netStatus = 'erro_rede';
               netError = `Erro HTTP ${response.status} ao validar na API.`;
