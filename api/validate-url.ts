@@ -6,7 +6,7 @@ import {
   RATE_LIMIT_MAX_PER_WINDOW,
   MAX_RATE_LIMIT_MAP_SIZE,
   MAX_CONCURRENT_VALIDATIONS,
-} from '../server';
+} from '../src/services/mediaUrlValidator.ts';
 
 export interface VercelApiRequest extends IncomingMessage {
   query?: Partial<Record<string, string | string[]>>;
