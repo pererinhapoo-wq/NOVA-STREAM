@@ -19,6 +19,8 @@ import {
   Check,
   Radio,
   Sparkles,
+  ChevronRight,
+  ChevronLeft,
 } from 'lucide-react';
 import {
   VideoItem,
@@ -126,12 +128,19 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const [hoverTime, setHoverTime] = useState(0);
   const [hoverPosition, setHoverPosition] = useState(0);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
-  const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
-  const [showTechInfo, setShowTechInfo] = useState(false);
+  type SettingsView = 'main' | 'quality' | 'speed';
+  const [settingsView, setSettingsView] = useState<SettingsView>('main');
   const [videoError, setVideoError] = useState<string | null>(null);
 
+  // Estados de feedback visual (Play/Pause central e Double-Tap Seek estilo YouTube)
+  const [playPauseFeedback, setPlayPauseFeedback] = useState<'play' | 'pause' | null>(null);
+  const [seekFeedback, setSeekFeedback] = useState<{ side: 'left' | 'right'; id: number } | null>(null);
+
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const playPauseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const seekFeedbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const singleTapTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number; y: number; isLeft: boolean } | null>(null);
 
   // Listener para confirmação física de redimensionamento do decodificador no elemento <video>
   const handleVideoResize = useCallback(() => {
@@ -359,19 +368,33 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       clearTimeout(controlsTimeoutRef.current);
     }
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsMenu && !showSpeedMenu && !showSubtitleMenu && !showTechInfo) {
+      if (isPlaying && !showSettingsMenu) {
         setControlsVisible(false);
       }
     }, 3500);
-  }, [isPlaying, showSettingsMenu, showSpeedMenu, showSubtitleMenu, showTechInfo]);
+  }, [isPlaying, showSettingsMenu]);
 
-  // Controle de Play/Pause
+  // Disparar animação suave e discreta de Play / Pause no centro
+  const triggerPlayPauseFeedback = useCallback((type: 'play' | 'pause') => {
+    if (playPauseTimeoutRef.current) {
+      clearTimeout(playPauseTimeoutRef.current);
+    }
+    setPlayPauseFeedback(type);
+    playPauseTimeoutRef.current = setTimeout(() => {
+      setPlayPauseFeedback(null);
+    }, 700);
+  }, []);
+
+  // Controle de Play/Pause com feedback visual
   const togglePlay = useCallback(() => {
     const el = videoRef.current;
     if (!el) return;
     if (el.paused) {
       el.play()
-        .then(() => setIsPlaying(true))
+        .then(() => {
+          setIsPlaying(true);
+          triggerPlayPauseFeedback('play');
+        })
         .catch((err) => {
           console.warn('Auto-play restrito pelo navegador:', err);
           setIsPlaying(false);
@@ -379,11 +402,12 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     } else {
       el.pause();
       setIsPlaying(false);
+      triggerPlayPauseFeedback('pause');
     }
     showControlsTemporarily();
-  }, [showControlsTemporarily]);
+  }, [showControlsTemporarily, triggerPlayPauseFeedback]);
 
-  // Avançar / retroceder 10s
+  // Avançar / retroceder 10s respeitando os limites do vídeo
   const seekRelative = useCallback((deltaSec: number) => {
     const el = videoRef.current;
     if (!el) return;
@@ -392,6 +416,98 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     setCurrentTime(target);
     showControlsTemporarily();
   }, [duration, showControlsTemporarily]);
+
+  // Avançar / retroceder 10s via gesto com animação discreta estilo YouTube
+  const triggerDoubleTapSeek = useCallback(
+    (isLeft: boolean) => {
+      seekRelative(isLeft ? -10 : 10);
+
+      if (seekFeedbackTimeoutRef.current) {
+        clearTimeout(seekFeedbackTimeoutRef.current);
+      }
+      setSeekFeedback({ side: isLeft ? 'left' : 'right', id: Date.now() });
+      seekFeedbackTimeoutRef.current = setTimeout(() => {
+        setSeekFeedback(null);
+      }, 650);
+    },
+    [seekRelative]
+  );
+
+  // Tratamento refinado de toques simples vs duplo toque na área do vídeo
+  const handleVideoAreaTap = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement;
+      // Prevenir acionamento se o clique atingir botões, barra de progresso, menus ou inputs
+      if (
+        target.closest('button') ||
+        target.closest('.player-menu-content') ||
+        target.closest('.player-menu-trigger') ||
+        target.closest('.group\\/progress') ||
+        target.closest('input')
+      ) {
+        return;
+      }
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const isLeft = clickX < rect.width / 2;
+      const now = Date.now();
+      const lastTap = lastTapRef.current;
+
+      const DOUBLE_TAP_WINDOW = 280; // Janela para diferenciar toque simples de duplo toque
+
+      if (
+        lastTap &&
+        now - lastTap.time < DOUBLE_TAP_WINDOW &&
+        Math.abs(e.clientX - lastTap.x) < 140
+      ) {
+        // Double tap detectado: cancela o toque simples para evitar pausar/reproduzir acidentalmente
+        if (singleTapTimeoutRef.current) {
+          clearTimeout(singleTapTimeoutRef.current);
+          singleTapTimeoutRef.current = null;
+        }
+        lastTapRef.current = null;
+        triggerDoubleTapSeek(lastTap.isLeft);
+      } else {
+        // Primeiro toque registrado
+        lastTapRef.current = { time: now, x: e.clientX, y: e.clientY, isLeft };
+
+        if (singleTapTimeoutRef.current) {
+          clearTimeout(singleTapTimeoutRef.current);
+        }
+
+        singleTapTimeoutRef.current = setTimeout(() => {
+          singleTapTimeoutRef.current = null;
+          lastTapRef.current = null;
+
+          // Ação de toque simples: alternar reproduzir/pausar com feedback suave
+          const el = videoRef.current;
+          if (!el) return;
+
+          if (el.paused) {
+            el.play()
+              .then(() => {
+                setIsPlaying(true);
+                triggerPlayPauseFeedback('play');
+              })
+              .catch((err) => {
+                console.warn('Reprodução restrita:', err);
+                setIsPlaying(false);
+              });
+          } else {
+            el.pause();
+            setIsPlaying(false);
+            triggerPlayPauseFeedback('pause');
+          }
+          showControlsTemporarily();
+        }, DOUBLE_TAP_WINDOW);
+      }
+    },
+    [triggerDoubleTapSeek, triggerPlayPauseFeedback, showControlsTemporarily]
+  );
 
   // Atualização de tempo do vídeo
   const handleTimeUpdate = () => {
@@ -522,7 +638,6 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     if (videoRef.current) {
       videoRef.current.playbackRate = speed;
     }
-    setShowSpeedMenu(false);
   };
 
   // Alterar seleção visual de qualidade (e sincronizar com HLS se a stream for adaptativa)
@@ -540,7 +655,6 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         }
       }
     }
-    setShowSettingsMenu(false);
   };
 
   // Alterar nível de qualidade real para transmissões HLS via hls.js
@@ -582,7 +696,6 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         }, 8000);
       }
     }
-    setShowSettingsMenu(false);
   };
 
   // Teclado
@@ -633,18 +746,26 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // Fechar menus ao clicar fora
+  // Fechar menu de configurações ao clicar fora
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.player-menu-trigger') && !target.closest('.player-menu-content')) {
         setShowSettingsMenu(false);
-        setShowSpeedMenu(false);
-        setShowSubtitleMenu(false);
       }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  // Limpeza de timers ao desmontar o componente
+  useEffect(() => {
+    return () => {
+      if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
+      if (playPauseTimeoutRef.current) clearTimeout(playPauseTimeoutRef.current);
+      if (seekFeedbackTimeoutRef.current) clearTimeout(seekFeedbackTimeoutRef.current);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
   }, []);
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
@@ -653,9 +774,11 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   return (
     <div
       ref={containerRef}
+      onClick={handleVideoAreaTap}
       onMouseMove={showControlsTemporarily}
       onTouchStart={showControlsTemporarily}
-      className="relative w-full h-full min-h-[340px] md:min-h-[520px] bg-black flex items-center justify-center select-none overflow-hidden group"
+      className="relative w-full h-full min-h-[340px] md:min-h-[520px] bg-black flex items-center justify-center select-none overflow-hidden group touch-manipulation"
+      style={{ touchAction: 'manipulation' }}
     >
       {/* Elemento de Vídeo HTML5 com suporte a HLS.js adaptativo e decodificação nativa */}
       <video
@@ -680,7 +803,6 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             );
           }
         }}
-        onClick={togglePlay}
         className="w-full h-full object-contain cursor-pointer max-h-screen"
       />
 
@@ -720,194 +842,66 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Barra superior de informações e fechar */}
+      {/* Barra superior com botão Fechar */}
       <div
-        className={`absolute top-0 left-0 right-0 p-4 md:p-6 bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 z-30 flex items-center justify-between ${
-          controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        className={`absolute top-0 left-0 right-0 p-3 sm:p-5 bg-gradient-to-b from-black/80 via-black/30 to-transparent transition-opacity duration-300 z-30 flex items-center justify-between pointer-events-none ${
+          controlsVisible ? 'opacity-100' : 'opacity-0'
         }`}
       >
-        <div className="flex items-center gap-3 max-w-[70%]">
-          <button
-            onClick={onClose}
-            aria-label="Voltar para a biblioteca"
-            className="w-9 h-9 rounded-full bg-slate-900/80 hover:bg-slate-800 text-slate-200 hover:text-white flex items-center justify-center transition-colors border border-slate-700/50"
-          >
-            <X className="w-5 h-5" />
-          </button>
-          <div className="truncate">
-            <div className="flex items-center gap-2 text-xs text-indigo-400 font-medium">
-              <span>{video.isLocalFile ? 'Arquivo Local' : video.category}</span>
-              <span aria-hidden="true">·</span>
-              <span className="text-slate-400">{displayResolution !== 'N/D' ? displayResolution : video.resolution}</span>
-              {isHlsActive && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono border border-indigo-500/30">
-                    <Radio className="w-3 h-3 text-indigo-400 animate-pulse" />
-                    HLS ABR
-                  </span>
-                </>
-              )}
-              {video.isLocalFile && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="text-emerald-400 font-medium">Sessão Ativa</span>
-                </>
-              )}
-            </div>
-            <h2 className="text-sm md:text-base font-bold text-white truncate">{video.title}</h2>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Botão de Informações Técnicas */}
-          <button
-            onClick={() => setShowTechInfo(!showTechInfo)}
-            aria-label="Informações técnicas de reprodução"
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border ${
-              showTechInfo
-                ? 'bg-indigo-600 text-white border-indigo-500'
-                : 'bg-slate-900/80 hover:bg-slate-800 text-slate-300 border-slate-700/50'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span className="hidden sm:inline">
-              {isHlsActive
-                ? 'Informações HLS & ABR'
-                : video.isLocalFile
-                ? 'Arquivo & Decodificação'
-                : 'Informações Técnicas'}
-            </span>
-          </button>
-        </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          aria-label="Voltar para a biblioteca"
+          className="pointer-events-auto w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-900/80 hover:bg-slate-800 active:scale-95 text-slate-200 hover:text-white flex items-center justify-center transition-all border border-slate-700/60 shadow-lg backdrop-blur-sm"
+        >
+          <X className="w-5 h-5" />
+        </button>
       </div>
 
-      {/* Painel Flutuante de Informações Técnicas e Codec */}
-      {showTechInfo && (
-        <div className="absolute top-16 right-4 sm:right-6 w-88 max-w-[calc(100vw-2rem)] bg-[#12131A] border border-slate-800 rounded-xl p-4 text-xs text-slate-300 shadow-2xl z-40 backdrop-blur-md">
-          <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-800">
-            <span className="font-semibold text-white flex items-center gap-1.5">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              {isHlsActive
-                ? 'Transmissão HLS Multi-bitrate'
-                : video.isLocalFile
-                ? 'Arquivo Local da Sessão'
-                : 'Informações Técnicas da Transmissão'}
-            </span>
-            <button
-              onClick={() => setShowTechInfo(false)}
-              className="text-slate-400 hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-slate-400">Modo de Acesso:</span>
-              <span className="text-emerald-400 font-medium">
-                {isHlsActive
-                  ? 'Transmissão HLS Adaptativa (ABR)'
-                  : video.isLocalFile
-                  ? 'Reprodução Local (Navegador)'
-                  : 'Transmissão Remota Direta'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Origem da Fonte:</span>
-              <span className="text-slate-200">
-                {isHlsActive
-                  ? 'Playlist Master (.m3u8)'
-                  : video.isLocalFile
-                  ? 'Arquivo Local (Blob URL)'
-                  : 'URL Remota Direta (HTTP/HTTPS)'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Resolução Real (Decodificador):</span>
-              <span className="text-indigo-400 font-mono font-medium">
-                {displayResolution !== 'N/D'
-                  ? `${displayResolution}${videoDimensions ? ` (${videoDimensions.width}x${videoDimensions.height})` : ''}`
-                  : 'N/D (em detecção)'}
-              </span>
-            </div>
-            {isHlsActive && (
-              <>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Resolução Solicitada:</span>
-                  <span className="text-slate-200 font-mono">
-                    {requestedHlsLevel === -1
-                      ? 'Automático (ABR)'
-                      : availableLevels.find((l) => l.levelIndex === requestedHlsLevel)?.label || 'Manual'}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Status da Transição:</span>
-                  <span
-                    className={
-                      isLevelSwitchPending
-                        ? 'text-amber-400 font-medium'
-                        : 'text-emerald-400 font-medium'
-                    }
-                  >
-                    {isLevelSwitchPending
-                      ? 'Aguardando decodificador processar novo buffer...'
-                      : 'Nível ativo e confirmado no decodificador'}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Bitrate de Vídeo:</span>
-                  <span className="text-emerald-400 font-mono">
-                    {currentBitrate
-                      ? `${(currentBitrate / 1000000).toFixed(2)} Mbps`
-                      : 'Dinâmico (ABR)'}
-                  </span>
-                </div>
-              </>
+      {/* Feedback central discreto e suave de Play / Pause */}
+      {playPauseFeedback && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-black/65 backdrop-blur-md border border-white/20 text-white flex items-center justify-center shadow-2xl animate-player-pop">
+            {playPauseFeedback === 'play' ? (
+              <Play className="w-7 h-7 sm:w-8 sm:h-8 fill-white text-white ml-0.5" />
+            ) : (
+              <Pause className="w-7 h-7 sm:w-8 sm:h-8 fill-white text-white" />
             )}
-            <div className="flex justify-between">
-              <span className="text-slate-400">Decodificação:</span>
-              <span className="text-slate-200">
-                {isHlsActive
-                  ? Hls.isSupported()
-                    ? `Hls.js Engine (v${Hls.version})`
-                    : 'Apple HLS Nativo'
-                  : 'Nativa HTML5 Media Pipeline'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Duração:</span>
-              <span className="text-slate-200 font-mono">{formatTime(duration)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Alternância de Resolução:</span>
-              <span className={isHlsActive ? 'text-emerald-400 font-medium' : 'text-slate-300'}>
-                {isHlsActive
-                  ? 'Ativa (Troca Real de Bitrate em Tempo Real)'
-                  : 'Não disponível (fonte única)'}
-              </span>
-            </div>
-            <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-              {isHlsActive
-                ? 'Stream HLS com múltiplos bitrates. O decodificador confirma a resolução física através do evento resize após a substituição do buffer.'
-                : video.isLocalFile
-                ? 'Arquivo de vídeo local carregado para reprodução direta no navegador durante esta sessão.'
-                : video.demoNotice
-                ? `${video.demoNotice} · Transmissão direta progressiva.`
-                : 'Vídeo transmitido diretamente da URL de origem em fluxo contínuo.'}
-            </div>
           </div>
         </div>
       )}
 
-      {/* Ícone central animado ao clicar no meio do player */}
-      {!isPlaying && (
-        <button
-          onClick={togglePlay}
-          aria-label="Reproduzir vídeo"
-          className="absolute w-16 h-16 md:w-20 md:h-20 rounded-full bg-indigo-600/90 hover:bg-indigo-600 text-white flex items-center justify-center shadow-xl transition-transform hover:scale-110 active:scale-95 z-20"
-        >
-          <Play className="w-8 h-8 md:w-10 md:h-10 ml-1 fill-white" />
-        </button>
+      {/* Botão inicial de Play caso o vídeo ainda não tenha iniciado */}
+      {!isPlaying && currentTime === 0 && !playPauseFeedback && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-indigo-600/90 text-white flex items-center justify-center shadow-xl transition-transform">
+            <Play className="w-8 h-8 sm:w-9 sm:h-9 ml-1 fill-white" />
+          </div>
+        </div>
+      )}
+
+      {/* Feedback elegante e discreto de Voltar 10s (estilo YouTube) */}
+      {seekFeedback && seekFeedback.side === 'left' && (
+        <div className="absolute left-0 top-0 bottom-0 w-1/3 flex items-center justify-center pointer-events-none z-20 overflow-hidden">
+          <div className="absolute inset-y-0 left-0 w-full bg-white/[0.08] rounded-r-full animate-seek-feedback pointer-events-none" />
+          <div className="relative flex items-center gap-1.5 bg-black/70 backdrop-blur-md px-3.5 py-2 rounded-full border border-white/20 text-white shadow-xl animate-seek-feedback">
+            <RotateCcw className="w-4 h-4 text-white" />
+            <span className="text-xs font-bold tracking-wide font-mono">10</span>
+          </div>
+        </div>
+      )}
+
+      {/* Feedback elegante e discreto de Avançar 10s (estilo YouTube) */}
+      {seekFeedback && seekFeedback.side === 'right' && (
+        <div className="absolute right-0 top-0 bottom-0 w-1/3 flex items-center justify-center pointer-events-none z-20 overflow-hidden">
+          <div className="absolute inset-y-0 right-0 w-full bg-white/[0.08] rounded-l-full animate-seek-feedback pointer-events-none" />
+          <div className="relative flex items-center gap-1.5 bg-black/70 backdrop-blur-md px-3.5 py-2 rounded-full border border-white/20 text-white shadow-xl animate-seek-feedback">
+            <span className="text-xs font-bold tracking-wide font-mono">10</span>
+            <RotateCw className="w-4 h-4 text-white" />
+          </div>
+        </div>
       )}
 
       {/* Overlay inferior de controles */}
@@ -919,7 +913,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         {/* Barra de Progresso Interativa */}
         <div
           ref={progressBarRef}
-          onClick={handleProgressSeek}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleProgressSeek(e);
+          }}
           onMouseMove={handleProgressMouseMove}
           onMouseEnter={() => setIsHoveringProgress(true)}
           onMouseLeave={() => setIsHoveringProgress(false)}
@@ -955,11 +952,17 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         </div>
 
         {/* Linha de Botões de Controle */}
-        <div className="flex items-center justify-between gap-2 text-slate-200">
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center justify-between gap-2 text-slate-200"
+        >
           {/* Lado Esquerdo: Play, Voltar 10s, Avançar 10s, Volume, Tempo */}
           <div className="flex items-center gap-1 sm:gap-2">
             <button
-              onClick={togglePlay}
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePlay();
+              }}
               aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
               className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
             >
@@ -967,7 +970,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             </button>
 
             <button
-              onClick={() => seekRelative(-10)}
+              onClick={(e) => {
+                e.stopPropagation();
+                seekRelative(-10);
+              }}
               aria-label="Voltar 10 segundos"
               className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
               title="Voltar 10s"
@@ -976,7 +982,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             </button>
 
             <button
-              onClick={() => seekRelative(10)}
+              onClick={(e) => {
+                e.stopPropagation();
+                seekRelative(10);
+              }}
               aria-label="Avançar 10 segundos"
               className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
               title="Avançar 10s"
@@ -987,7 +996,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             {/* Controle de Volume */}
             <div className="flex items-center group/vol">
               <button
-                onClick={toggleMute}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleMute();
+                }}
                 aria-label={isMuted ? 'Ativar som' : 'Desativar som'}
                 className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
               >
@@ -1020,176 +1032,178 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Lado Direito: Velocidade, Legendas, Resolução, Fullscreen */}
+          {/* Lado Direito: Menu Unificado de Configurações e Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2">
-            {/* Menu de Velocidade */}
-            <div className="relative">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowSpeedMenu(!showSpeedMenu);
-                  setShowSettingsMenu(false);
-                  setShowSubtitleMenu(false);
-                }}
-                className="player-menu-trigger h-9 px-2 sm:px-2.5 flex items-center gap-1 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
-                title="Velocidade de reprodução"
-              >
-                <Gauge className="w-4 h-4 text-slate-400" />
-                <span>{playbackSpeed}x</span>
-              </button>
-
-              {showSpeedMenu && (
-                <div className="player-menu-content absolute bottom-12 right-0 w-36 bg-[#12131A] border border-slate-800 rounded-xl p-1.5 shadow-2xl z-40">
-                  <div className="px-2.5 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                    Velocidade
-                  </div>
-                  {([0.5, 0.75, 1, 1.25, 1.5, 2] as PlaybackSpeed[]).map((spd) => (
-                    <button
-                      key={spd}
-                      onClick={() => changeSpeed(spd)}
-                      className={`w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-md transition-colors ${
-                        playbackSpeed === spd
-                          ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                          : 'text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <span>{spd === 1 ? '1x (Normal)' : `${spd}x`}</span>
-                      {playbackSpeed === spd && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Menu de Legendas */}
-            <div className="relative">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowSubtitleMenu(!showSubtitleMenu);
-                  setShowSpeedMenu(false);
-                  setShowSettingsMenu(false);
-                }}
-                className={`player-menu-trigger w-10 h-10 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors ${
-                  activeSubtitle !== 'none' ? 'text-indigo-400' : 'text-slate-300 hover:text-white'
-                }`}
-                title="Legendas"
-              >
-                <Subtitles className="w-4 h-4" />
-              </button>
-
-              {showSubtitleMenu && (
-                <div className="player-menu-content absolute bottom-12 right-0 w-44 bg-[#12131A] border border-slate-800 rounded-xl p-1.5 shadow-2xl z-40">
-                  <div className="px-2.5 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                    Legendas
-                  </div>
-                  <button
-                    onClick={() => {
-                      setActiveSubtitle('none');
-                      setShowSubtitleMenu(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-md transition-colors ${
-                      activeSubtitle === 'none'
-                        ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                        : 'text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <span>Desativadas</span>
-                    {activeSubtitle === 'none' && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveSubtitle('pt');
-                      setShowSubtitleMenu(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-md transition-colors ${
-                      activeSubtitle === 'pt'
-                        ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                        : 'text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <span>Português (Brasil)</span>
-                    {activeSubtitle === 'pt' && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveSubtitle('en');
-                      setShowSubtitleMenu(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-md transition-colors ${
-                      activeSubtitle === 'en'
-                        ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                        : 'text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <span>Inglês (Original)</span>
-                    {activeSubtitle === 'en' && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Menu de Qualidade */}
+            {/* Menu Integrado de Configurações (Qualidade + Velocidade) */}
             <div className="relative">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowSettingsMenu(!showSettingsMenu);
-                  setShowSpeedMenu(false);
-                  setShowSubtitleMenu(false);
+                  setSettingsView('main');
                 }}
-                className="player-menu-trigger h-9 px-2 sm:px-2.5 flex items-center gap-1 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
-                title="Qualidade do Vídeo"
-                aria-label="Qualidade do Vídeo"
+                className="player-menu-trigger h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+                title="Configurações (Qualidade e Velocidade)"
+                aria-label="Configurações"
               >
-                <Settings className="w-4 h-4 text-slate-400" />
-                <span className="uppercase text-[11px] font-mono">
+                <Settings className="w-4 h-4 text-slate-300" />
+                <span className="hidden xs:inline uppercase text-[11px] font-mono text-slate-300">
                   {selectedQuality === 'auto' ? 'Auto' : selectedQuality}
                 </span>
               </button>
 
               {showSettingsMenu && (
-                <div className="player-menu-content absolute bottom-12 right-0 w-56 bg-[#12131A] border border-slate-800 rounded-xl p-2 shadow-2xl z-40 max-h-72 overflow-y-auto custom-scrollbar">
-                  <div className="px-2 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>Qualidade</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Resoluções</span>
-                  </div>
-                  {(['auto', '1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => changeQuality(q)}
-                      className={`w-full flex items-center justify-between px-2.5 py-1.5 text-xs rounded-md transition-colors ${
-                        selectedQuality === q
-                          ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                          : 'text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="uppercase">{q === 'auto' ? 'Automático' : q}</span>
-                        {q === '1080p' && (
-                          <span className="text-[10px] text-slate-400 font-normal">Full HD</span>
-                        )}
-                        {q === '720p' && (
-                          <span className="text-[10px] text-slate-400 font-normal">HD</span>
-                        )}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="player-menu-content absolute bottom-12 right-0 w-48 sm:w-52 max-w-[calc(100vw-1.5rem)] max-h-[60vh] bg-[#12131A]/95 border border-slate-800/90 rounded-xl p-1.5 shadow-2xl z-50 backdrop-blur-md overflow-y-auto custom-scrollbar"
+                >
+                  {/* Visão Principal das Configurações */}
+                  {settingsView === 'main' && (
+                    <div className="space-y-0.5">
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                        <span className="text-xs font-semibold text-slate-200">Configurações</span>
+                        <button
+                          onClick={() => setShowSettingsMenu(false)}
+                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                          aria-label="Fechar configurações"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      {selectedQuality === q && (
-                        <Check className="w-3.5 h-3.5 text-indigo-400" />
-                      )}
-                    </button>
-                  ))}
-                  <div className="mt-2 pt-2 border-t border-slate-800 px-2 text-[10px] text-slate-400 leading-normal">
-                    {isHlsActive
-                      ? 'Stream HLS adaptativa com seleção de variantes.'
-                      : 'A troca de resolução não está disponível para esta fonte.'}
-                  </div>
+
+                      {/* Opção Qualidade */}
+                      <button
+                        onClick={() => setSettingsView('quality')}
+                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>Qualidade</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200">
+                          <span className="font-mono text-[11px] uppercase">
+                            {selectedQuality === 'auto' ? 'Automático' : selectedQuality}
+                          </span>
+                          <ChevronRight className="w-3 h-3" />
+                        </div>
+                      </button>
+
+                      {/* Opção Velocidade */}
+                      <button
+                        onClick={() => setSettingsView('speed')}
+                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Gauge className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>Velocidade</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200">
+                          <span className="font-mono text-[11px]">
+                            {playbackSpeed === 1 ? 'Normal (1x)' : `${playbackSpeed}x`}
+                          </span>
+                          <ChevronRight className="w-3 h-3" />
+                        </div>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Submenu de Qualidade */}
+                  {settingsView === 'quality' && (
+                    <div className="space-y-0.5">
+                      <div className="flex items-center justify-between px-1.5 py-1 border-b border-slate-800/80 mb-1">
+                        <button
+                          onClick={() => setSettingsView('main')}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 hover:text-white rounded transition-colors group py-0.5 pl-0.5 pr-1.5"
+                          title="Voltar"
+                        >
+                          <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0 transition-transform group-hover:-translate-x-0.5" />
+                          <span className="leading-none pt-[0.5px]">Qualidade</span>
+                        </button>
+                        <button
+                          onClick={() => setShowSettingsMenu(false)}
+                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                          aria-label="Fechar menu"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {(['auto', '1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
+                        <button
+                          key={q}
+                          onClick={() => changeQuality(q)}
+                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors ${
+                            selectedQuality === q
+                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                              : 'text-slate-300 hover:bg-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className="uppercase">{q === 'auto' ? 'Automático' : q}</span>
+                            {q === '1080p' && (
+                              <span className="text-[10px] text-slate-400 font-normal">Full HD</span>
+                            )}
+                            {q === '720p' && (
+                              <span className="text-[10px] text-slate-400 font-normal">HD</span>
+                            )}
+                          </div>
+                          {selectedQuality === q && (
+                            <Check className="w-3.5 h-3.5 text-indigo-400" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Submenu de Velocidade */}
+                  {settingsView === 'speed' && (
+                    <div className="space-y-0.5">
+                      <div className="flex items-center justify-between px-1.5 py-1 border-b border-slate-800/80 mb-1">
+                        <button
+                          onClick={() => setSettingsView('main')}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 hover:text-white rounded transition-colors group py-0.5 pl-0.5 pr-1.5"
+                          title="Voltar"
+                        >
+                          <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0 transition-transform group-hover:-translate-x-0.5" />
+                          <span className="leading-none pt-[0.5px]">Velocidade</span>
+                        </button>
+                        <button
+                          onClick={() => setShowSettingsMenu(false)}
+                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                          aria-label="Fechar menu"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {([0.5, 0.75, 1, 1.25, 1.5, 2] as PlaybackSpeed[]).map((spd) => (
+                        <button
+                          key={spd}
+                          onClick={() => changeSpeed(spd)}
+                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors ${
+                            playbackSpeed === spd
+                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                              : 'text-slate-300 hover:bg-slate-800'
+                          }`}
+                        >
+                          <span>{spd === 1 ? '1x (Normal)' : `${spd}x`}</span>
+                          {playbackSpeed === spd && (
+                            <Check className="w-3.5 h-3.5 text-indigo-400" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             {/* Tela Cheia */}
             <button
-              onClick={toggleFullscreen}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleFullscreen();
+              }}
               aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
               className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
             >
