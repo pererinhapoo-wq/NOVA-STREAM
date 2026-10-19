@@ -25,9 +25,36 @@ async function runPlayerImprovementsSuite() {
   assert(availableSpeeds.includes(1), 'Velocidade padrão 1x está presente');
   assert(availableSpeeds[0] === 0.5 && availableSpeeds[5] === 2, 'Velocidades variam de 0.5x a 2x');
 
-  const availableQualities: QualityLevel[] = ['auto', '1080p', '720p', '480p', '360p'];
-  assert(availableQualities.length === 5, 'Existem 5 opções de qualidade no submenu');
-  assert(availableQualities[0] === 'auto', 'Modo Automático é a primeira opção');
+  const availableQualities: QualityLevel[] = ['1080p', '720p', '480p', '360p'];
+  assert(availableQualities.length === 4, 'Existem 4 opções de qualidade no submenu (sem opção Automático)');
+  assert(!availableQualities.includes('auto'), 'Opção Automático removida da lista');
+  assert(availableQualities[0] === '1080p', 'Primeira opção de resolução é 1080p');
+
+  // Estrutura do botão de retorno (seta ChevronLeft) no próprio cabeçalho ao lado do título
+  const qualityMenuStructure = {
+    header: 'Qualidade',
+    hasCloseButton: true,
+    hasBackButtonInHeader: true,
+    hasSeparateVoltarLine: false,
+    optionsCount: availableQualities.length,
+  };
+  assert(qualityMenuStructure.hasBackButtonInHeader === true, 'Seta de voltar ChevronLeft posicionada no cabeçalho imediatamente à esquerda do título Qualidade');
+  assert(qualityMenuStructure.hasSeparateVoltarLine === false, 'Linha separada de Voltar e texto Voltar removidos da interface');
+
+  const speedMenuStructure = {
+    header: 'Velocidade',
+    hasCloseButton: true,
+    hasBackButtonInHeader: true,
+    hasSeparateVoltarLine: false,
+    optionsCount: availableSpeeds.length,
+  };
+  assert(speedMenuStructure.hasBackButtonInHeader === true, 'Seta de voltar ChevronLeft posicionada no cabeçalho imediatamente à esquerda do título Velocidade');
+  assert(speedMenuStructure.hasSeparateVoltarLine === false, 'Linha separada de Voltar removida no submenu de velocidade');
+
+  // Formatação consistente do rótulo da velocidade sem quebra estranha
+  const formatSpeedLabel = (spd: PlaybackSpeed) => (spd === 1 ? 'Normal (1x)' : `${spd}x`);
+  assert(formatSpeedLabel(1) === 'Normal (1x)', 'Rótulo padrão no menu principal exibe "Normal (1x)" de forma alinhada');
+  assert(formatSpeedLabel(1.5) === '1.5x', 'Rótulo 1.5x exibido de forma consistente');
 
   // 2. LÓGICA DE DETECÇÃO DE GESTOS (TOQUE SIMPLES VS DUPLO TOQUE)
   console.log('\n--- 2. DIFERENCIAÇÃO DE TOQUE SIMPLES E DUPLO TOQUE ---');

@@ -73,7 +73,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(1);
-  const [selectedQuality, setSelectedQuality] = useState<QualityLevel>('auto');
+  const [selectedQuality, setSelectedQuality] = useState<QualityLevel>('1080p');
   const [activeSubtitle, setActiveSubtitle] = useState<string>('pt');
 
   // Resolução e dimensões detectadas em tempo de execução
@@ -1048,7 +1048,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
               >
                 <Settings className="w-4 h-4 text-slate-300" />
                 <span className="hidden xs:inline uppercase text-[11px] font-mono text-slate-300">
-                  {selectedQuality === 'auto' ? 'Auto' : selectedQuality}
+                  {selectedQuality}
                 </span>
               </button>
 
@@ -1076,32 +1076,32 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                         onClick={() => setSettingsView('quality')}
                         className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group"
                       >
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>Qualidade</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                          <span className="truncate">Qualidade</span>
                         </div>
-                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200">
-                          <span className="font-mono text-[11px] uppercase">
-                            {selectedQuality === 'auto' ? 'Automático' : selectedQuality}
+                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
+                          <span className="text-xs uppercase whitespace-nowrap">
+                            {selectedQuality}
                           </span>
-                          <ChevronRight className="w-3 h-3" />
+                          <ChevronRight className="w-3.5 h-3.5 shrink-0" />
                         </div>
                       </button>
 
                       {/* Opção Velocidade */}
                       <button
                         onClick={() => setSettingsView('speed')}
-                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group"
+                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group text-left"
                       >
-                        <div className="flex items-center gap-2">
-                          <Gauge className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>Velocidade</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Gauge className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                          <span className="truncate">Velocidade</span>
                         </div>
-                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200">
-                          <span className="font-mono text-[11px]">
+                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
+                          <span className="text-xs whitespace-nowrap">
                             {playbackSpeed === 1 ? 'Normal (1x)' : `${playbackSpeed}x`}
                           </span>
-                          <ChevronRight className="w-3 h-3" />
+                          <ChevronRight className="w-3.5 h-3.5 shrink-0" />
                         </div>
                       </button>
                     </div>
@@ -1110,15 +1110,18 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                   {/* Submenu de Qualidade */}
                   {settingsView === 'quality' && (
                     <div className="space-y-0.5">
-                      <div className="flex items-center justify-between px-1.5 py-1 border-b border-slate-800/80 mb-1">
-                        <button
-                          onClick={() => setSettingsView('main')}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 hover:text-white rounded transition-colors group py-0.5 pl-0.5 pr-1.5"
-                          title="Voltar"
-                        >
-                          <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0 transition-transform group-hover:-translate-x-0.5" />
-                          <span className="leading-none pt-[0.5px]">Qualidade</span>
-                        </button>
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setSettingsView('main')}
+                            className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0"
+                            title="Voltar"
+                            aria-label="Voltar"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <span className="text-xs font-semibold text-slate-200">Qualidade</span>
+                        </div>
                         <button
                           onClick={() => setShowSettingsMenu(false)}
                           className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
@@ -1128,7 +1131,8 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                         </button>
                       </div>
 
-                      {(['auto', '1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
+                      {/* Lista de Resoluções */}
+                      {(['1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
                         <button
                           key={q}
                           onClick={() => changeQuality(q)}
@@ -1139,7 +1143,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                           }`}
                         >
                           <div className="flex items-center gap-1.5">
-                            <span className="uppercase">{q === 'auto' ? 'Automático' : q}</span>
+                            <span className="uppercase">{q}</span>
                             {q === '1080p' && (
                               <span className="text-[10px] text-slate-400 font-normal">Full HD</span>
                             )}
@@ -1148,7 +1152,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                             )}
                           </div>
                           {selectedQuality === q && (
-                            <Check className="w-3.5 h-3.5 text-indigo-400" />
+                            <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                           )}
                         </button>
                       ))}
@@ -1158,15 +1162,18 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                   {/* Submenu de Velocidade */}
                   {settingsView === 'speed' && (
                     <div className="space-y-0.5">
-                      <div className="flex items-center justify-between px-1.5 py-1 border-b border-slate-800/80 mb-1">
-                        <button
-                          onClick={() => setSettingsView('main')}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-slate-200 hover:text-white rounded transition-colors group py-0.5 pl-0.5 pr-1.5"
-                          title="Voltar"
-                        >
-                          <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0 transition-transform group-hover:-translate-x-0.5" />
-                          <span className="leading-none pt-[0.5px]">Velocidade</span>
-                        </button>
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setSettingsView('main')}
+                            className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0"
+                            title="Voltar"
+                            aria-label="Voltar"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <span className="text-xs font-semibold text-slate-200">Velocidade</span>
+                        </div>
                         <button
                           onClick={() => setShowSettingsMenu(false)}
                           className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
@@ -1176,6 +1183,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                         </button>
                       </div>
 
+                      {/* Lista de Velocidades */}
                       {([0.5, 0.75, 1, 1.25, 1.5, 2] as PlaybackSpeed[]).map((spd) => (
                         <button
                           key={spd}
@@ -1186,9 +1194,9 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
                               : 'text-slate-300 hover:bg-slate-800'
                           }`}
                         >
-                          <span>{spd === 1 ? '1x (Normal)' : `${spd}x`}</span>
+                          <span className="text-xs whitespace-nowrap">{spd === 1 ? '1x' : `${spd}x`}</span>
                           {playbackSpeed === spd && (
-                            <Check className="w-3.5 h-3.5 text-indigo-400" />
+                            <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                           )}
                         </button>
                       ))}

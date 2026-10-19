@@ -185,18 +185,18 @@ async function runPlayerQualitySuite() {
   // -----------------------------------------------------------------
   console.log('\n--- 4. RESTAURAÇÃO DAS OPÇÕES ANTERIORES E PRESERVAÇÃO DE URL ---');
 
-  // As 5 opções visuais anteriores restauradas
-  const restoredOptions = ['auto', '1080p', '720p', '480p', '360p'];
-  assert(restoredOptions.length === 5, 'Menu de qualidade possui 5 opções visuais');
-  assert(restoredOptions[0] === 'auto', 'Primeira opção é "auto" (Automático)');
-  assert(restoredOptions[1] === '1080p', 'Segunda opção é "1080p"');
-  assert(restoredOptions[2] === '720p', 'Terceira opção é "720p"');
-  assert(restoredOptions[3] === '480p', 'Quarta opção é "480p"');
-  assert(restoredOptions[4] === '360p', 'Quinta opção é "360p"');
+  // Opções visuais de qualidade (sem Automático conforme especificado)
+  const restoredOptions = ['1080p', '720p', '480p', '360p'];
+  assert(restoredOptions.length === 4, 'Menu de qualidade possui 4 opções de resolução');
+  assert(!restoredOptions.includes('auto'), 'Opção "auto" (Automático) não está presente na lista de qualidades');
+  assert(restoredOptions[0] === '1080p', 'Primeira opção é "1080p"');
+  assert(restoredOptions[1] === '720p', 'Segunda opção é "720p"');
+  assert(restoredOptions[2] === '480p', 'Terceira opção é "480p"');
+  assert(restoredOptions[3] === '360p', 'Quarta opção é "360p"');
 
   // Simulação de seleção no player sem alteração de URL (não simular troca de qualidade)
   const initialUrl = demoHero4k.videoUrl;
-  let simulatedSelectedQuality = 'auto';
+  let simulatedSelectedQuality = '1080p';
 
   // Usuário clica em '720p' no menu
   simulatedSelectedQuality = '720p';
