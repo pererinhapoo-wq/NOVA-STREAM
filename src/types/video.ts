@@ -51,6 +51,13 @@ export interface VideoItem {
   continueWatchingProgress?: number; // 0 to 100 percentage
   uploadStatus?: VideoUploadStatus;
   subtitles?: VideoSubtitles[];
+  qualityVariants?: VideoQualityVariant[];
+}
+
+export interface VideoQualityVariant {
+  quality: QualityLevel;
+  url: string;
+  label?: string;
 }
 
 export type PlaybackSpeed = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2;

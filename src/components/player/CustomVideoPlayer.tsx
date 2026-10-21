@@ -84,7 +84,17 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(1);
-  const [selectedQuality, setSelectedQuality] = useState<QualityLevel>('1080p');
+  const isHlsUrl = useCallback((url: string): boolean => {
+    if (!url) return false;
+    const cleanUrl = url.split('?')[0].toLowerCase();
+    return cleanUrl.endsWith('.m3u8') || url.includes('.m3u8') || url.includes('/hls/');
+  }, []);
+
+  const [selectedQuality, setSelectedQuality] = useState<QualityLevel>(() => {
+    return isHlsUrl(effectiveVideoUrl)
+      ? 'auto'
+      : ((video.resolution?.toLowerCase() as QualityLevel) || '1080p');
+  });
   const [activeSubtitle, setActiveSubtitle] = useState<string>('pt');
 
   // Resolução e dimensões detectadas em tempo de execução
@@ -103,15 +113,11 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const hlsRef = useRef<Hls | null>(null);
   const switchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const isHlsUrl = useCallback((url: string): boolean => {
-    if (!url) return false;
-    const cleanUrl = url.split('?')[0].toLowerCase();
-    return cleanUrl.endsWith('.m3u8') || url.includes('.m3u8') || url.includes('/hls/');
-  }, []);
-
   // Sincronizar resolução inicial e limpar dimensões ao alternar de vídeo
   useEffect(() => {
+    const isHls = isHlsUrl(effectiveVideoUrl);
     setDetectedResolution(video.resolution || 'N/D');
+    setSelectedQuality(isHls ? 'auto' : ((video.resolution?.toLowerCase() as QualityLevel) || '1080p'));
     setVideoDimensions(null);
     setCurrentBitrate(null);
     setRequestedHlsLevel(-1);
@@ -127,7 +133,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     setCustomSubtitle(null);
     setSubtitleError(null);
     setShowSubtitleMenu(false);
-  }, [video.id, video.resolution]);
+  }, [video.id, video.resolution, effectiveVideoUrl, isHlsUrl]);
 
   // Resolução efetiva para exibição honesta
   const displayResolution: VideoResolution =
@@ -707,24 +713,51 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     }
   };
 
-  // Alterar seleção visual de qualidade (e sincronizar com HLS se a stream for adaptativa)
-  const changeQuality = (q: QualityLevel) => {
-    setSelectedQuality(q);
+  // Alterar seleção de qualidade com suporte a troca real em transmissões HLS ou variantes diretas
+  const changeQuality = (q: QualityLevel, targetLevelIndex?: number) => {
+    // Cenário HLS: chaveia os níveis de qualidade diretamente no HLS.js
     if (isHlsActive && hlsRef.current) {
-      if (q === 'auto') {
-        changeHlsQuality(-1, 'auto');
+      if (q === 'auto' || targetLevelIndex === -1) {
+        changeHlsQuality(-1, 'Automático');
+      } else if (typeof targetLevelIndex === 'number' && targetLevelIndex >= 0) {
+        const targetLvl = availableLevels.find((lvl) => lvl.levelIndex === targetLevelIndex);
+        if (targetLvl) {
+          changeHlsQuality(targetLvl.levelIndex, targetLvl.resolution);
+        }
       } else {
         const targetLvl = availableLevels.find(
-          (lvl) => lvl.label.toLowerCase() === q.toLowerCase()
+          (lvl) => lvl.levelIndex >= 0 && lvl.resolution.toLowerCase() === q.toLowerCase()
         );
-        if (targetLvl && targetLvl.levelIndex >= 0) {
+        if (targetLvl) {
           changeHlsQuality(targetLvl.levelIndex, targetLvl.resolution);
         }
       }
+      return;
     }
+
+    // Cenário Variantes Diretas registradas em metadados (ex.: URLs separadas por resolução)
+    if (video.qualityVariants && video.qualityVariants.length > 0) {
+      const variant = video.qualityVariants.find((v) => v.quality.toLowerCase() === q.toLowerCase());
+      if (variant && videoRef.current) {
+        const videoEl = videoRef.current;
+        const previousTime = videoEl.currentTime;
+        const wasPlaying = !videoEl.paused;
+        videoEl.src = variant.url;
+        videoEl.currentTime = previousTime;
+        if (wasPlaying) {
+          videoEl.play().catch(() => {});
+        }
+        setSelectedQuality(variant.quality);
+        setDetectedResolution(variant.quality as VideoResolution);
+      }
+      return;
+    }
+
+    // Para arquivos únicos de vídeo sem faixas alternativas:
+    // A resolução é fixa na fonte. Nenhuma mudança simulada é aplicada.
   };
 
-  // Alterar nível de qualidade real para transmissões HLS via hls.js
+  // Alterar nível de qualidade real para transmissões HLS via hls.js (preserva posição e estado de reprodução)
   const changeHlsQuality = (levelIndex: number, resLabel: string) => {
     const hls = hlsRef.current;
     const el = videoRef.current;
@@ -736,20 +769,21 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     }
 
     setRequestedHlsLevel(levelIndex);
-    setSelectedQuality(resLabel.toLowerCase() as QualityLevel);
 
     if (levelIndex === -1) {
-      // Reativa o modo Automático (ABR)
+      // Reativa o modo Automático (ABR) no hls.js
       hls.currentLevel = -1;
+      setSelectedQuality('auto');
       setIsLevelSwitchPending(false);
     } else {
-      // Solicita a qualidade manual selecionada no hls.js
+      // Força a qualidade manual selecionada no hls.js (desativa a seleção automática ABR)
       hls.currentLevel = levelIndex;
+      setSelectedQuality(resLabel.toLowerCase() as QualityLevel);
 
       const targetLvl = hls.levels[levelIndex];
       const targetHeight = targetLvl?.height;
 
-      // Trata o caso em que a dimensão não muda (ex.: decodificador já está na resolução física do nível selecionado)
+      // Trata o caso em que a dimensão física decodificada já é a selecionada
       if (el && targetHeight && el.videoHeight > 0 && el.videoHeight === targetHeight) {
         setIsLevelSwitchPending(false);
         if (targetLvl.bitrate) {
@@ -757,10 +791,10 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         }
       } else {
         setIsLevelSwitchPending(true);
-        // Timeout de segurança para evitar interface travada em "trocando..." se o decodificador não emitir resize
+        // Timeout para ocultar feedback de troca de nível
         switchTimeoutRef.current = setTimeout(() => {
           setIsLevelSwitchPending(false);
-        }, 8000);
+        }, 5000);
       }
     }
   };
@@ -1203,7 +1237,7 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
                 seekRelative(-10);
               }}
               aria-label="Voltar 10 segundos"
-              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden xs:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
+              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden sm:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
               title="Voltar 10s"
             >
               <RotateCcw className="w-4 h-4" />
@@ -1215,7 +1249,7 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
                 seekRelative(10);
               }}
               aria-label="Avançar 10 segundos"
-              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden xs:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
+              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden sm:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
               title="Avançar 10s"
             >
               <RotateCw className="w-4 h-4" />
@@ -1262,373 +1296,510 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
 
           {/* Lado Direito: Legendas (CC), Menu Unificado de Configurações e Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-            {/* Input de arquivo de legenda oculto com suporte total a seleção nativa no celular Android e desktop */}
+            {/* Input de arquivo de legenda acessível nativamente pelo Android e desktop */}
             <input
+              id="player-srt-file-input"
               ref={subtitleInputRef}
               type="file"
               accept=".srt,.vtt,text/plain,text/*,application/x-subrip,application/octet-stream,*/*"
               onChange={handleSubtitleFileSelect}
-              className="hidden"
-              aria-label="Selecionar arquivo de legenda SRT"
+              className="sr-only"
+              aria-label="Enviar legenda (.SRT)"
             />
 
             {/* Botão de Legendas (CC) — Principal, altamente visível no layout mobile e desktop */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowSubtitleMenu(!showSubtitleMenu);
-                  setShowSettingsMenu(false);
-                }}
-                className={`player-subtitle-trigger h-9 sm:h-10 px-2.5 sm:px-3 flex items-center gap-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                  customSubtitle?.isEnabled
-                    ? 'bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-600/30'
-                    : customSubtitle
-                      ? 'bg-slate-800 text-indigo-300 border-slate-700 hover:bg-slate-700'
-                      : 'bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border-slate-700/80'
-                }`}
-                title="Legendas (SRT)"
-                aria-label="Legendas (CC)"
-              >
-                <Subtitles className={`w-4 h-4 shrink-0 ${customSubtitle?.isEnabled ? 'text-white' : 'text-indigo-400'}`} />
-                <span className="text-[11px] sm:text-xs uppercase tracking-wider font-bold">CC</span>
-                {customSubtitle && (
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      customSubtitle.isEnabled ? 'bg-emerald-400' : 'bg-slate-500'
-                    }`}
-                  />
-                )}
-              </button>
-
-              {/* Menu de Legendas: responsivo e centrado em telas mobile para nunca cortar */}
-              {showSubtitleMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="player-subtitle-content fixed sm:absolute bottom-16 sm:bottom-14 left-3 right-3 sm:left-auto sm:right-0 w-auto sm:w-80 max-w-sm sm:max-w-none mx-auto sm:mx-0 bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-3 sm:p-3.5 shadow-2xl z-50 backdrop-blur-xl overflow-hidden text-slate-200 animate-in fade-in zoom-in-95 duration-150"
-                >
-                  {/* Cabeçalho */}
-                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/90 mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
-                        <Subtitles className="w-3.5 h-3.5" />
-                      </div>
-                      <div>
-                        <span className="text-xs font-bold text-white block leading-none">Legendas</span>
-                        <span className="text-[10px] text-slate-400 block leading-none mt-1">Sincronização com arquivo .SRT</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setShowSubtitleMenu(false)}
-                      className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-slate-800 transition-colors"
-                      aria-label="Fechar menu de legendas"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Conteúdo com arquivo carregado */}
-                  {customSubtitle ? (
-                    <div className="space-y-2.5">
-                      {/* Card do arquivo selecionado */}
-                      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-start gap-2 min-w-0">
-                            <FileText className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold text-white truncate" title={customSubtitle.fileName}>
-                                {customSubtitle.fileName}
-                              </p>
-                              <p className="text-[11px] text-slate-400 mt-0.5">
-                                {customSubtitle.cues.length} falas sincronizadas
-                                {customSubtitle.fileSizeBytes ? ` • ${(customSubtitle.fileSizeBytes / 1024).toFixed(1)} KB` : ''}
-                              </p>
-                            </div>
-                          </div>
-                          <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${
-                              customSubtitle.isEnabled
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                            }`}
-                          >
-                            {customSubtitle.isEnabled ? 'Ativa' : 'Desativada'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Botão de Ativar / Desativar Legendas */}
-                      <button
-                        type="button"
-                        onClick={handleToggleSubtitle}
-                        className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg font-medium transition-colors cursor-pointer ${
-                          customSubtitle.isEnabled
-                            ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/40'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-750 border border-slate-700/60'
-                        }`}
-                      >
-                        <span>{customSubtitle.isEnabled ? 'Desativar exibição da legenda' : 'Ativar exibição da legenda'}</span>
-                        {customSubtitle.isEnabled ? (
-                          <Check className="w-4 h-4 text-indigo-400 shrink-0" />
-                        ) : (
-                          <span className="text-[10px] text-slate-400 font-normal">Oculta</span>
-                        )}
-                      </button>
-
-                      {/* Ações de Envio / Substituição e Remoção */}
-                      <div className="flex items-center gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => subtitleInputRef.current?.click()}
-                          disabled={isUploadingSubtitle}
-                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-semibold shadow-md transition-all cursor-pointer"
-                        >
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Enviar legenda (.SRT)</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleRemoveSubtitle}
-                          className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg border border-slate-800 transition-colors"
-                          title="Remover legenda"
-                          aria-label="Remover legenda"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Conteúdo quando nenhuma legenda foi enviada */
-                    <div className="space-y-3">
-                      <div className="p-3 bg-slate-900/70 rounded-xl border border-dashed border-slate-800 text-center">
-                        <p className="text-xs text-slate-200 font-semibold">Nenhuma legenda carregada</p>
-                        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                          Selecione um arquivo .srt salvo no seu celular ou computador para sincronizar com o vídeo.
-                        </p>
-                      </div>
-
-                      {/* Botão Enviar legenda (.SRT) */}
-                      <button
-                        type="button"
-                        onClick={() => subtitleInputRef.current?.click()}
-                        disabled={isUploadingSubtitle}
-                        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
-                      >
-                        <Upload className="w-4 h-4 text-white" />
-                        <span>Enviar legenda (.SRT)</span>
-                      </button>
-
-                      {/* Opção rápida de teste */}
-                      <button
-                        type="button"
-                        onClick={handleLoadDemoSrt}
-                        className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800/80 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-lg text-[11px] font-medium transition-colors"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                        <span>Testar com legenda de exemplo</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Mensagem de Erro de Parsing, se houver */}
-                  {subtitleError && (
-                    <div className="mt-2.5 p-2 bg-red-950/60 border border-red-800/60 rounded-lg flex items-start gap-1.5 text-red-300 text-[11px] leading-tight">
-                      <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-                      <span>{subtitleError}</span>
-                    </div>
-                  )}
-                </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSubtitleMenu((prev) => !prev);
+                setShowSettingsMenu(false);
+              }}
+              className={`player-subtitle-trigger shrink-0 h-9 sm:h-10 px-2 sm:px-3 flex items-center gap-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                customSubtitle?.isEnabled
+                  ? 'bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-600/30'
+                  : customSubtitle
+                    ? 'bg-slate-800 text-indigo-300 border-slate-700 hover:bg-slate-700'
+                    : 'bg-slate-800/90 hover:bg-slate-750 text-slate-100 hover:text-white border-slate-600 shadow-sm'
+              }`}
+              title="Legendas (SRT / CC)"
+              aria-label="Legendas (CC)"
+            >
+              <Subtitles className={`w-4 h-4 shrink-0 ${customSubtitle?.isEnabled ? 'text-white' : 'text-indigo-400'}`} />
+              <span className="text-[11px] sm:text-xs uppercase tracking-wider font-bold">CC</span>
+              {customSubtitle && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    customSubtitle.isEnabled ? 'bg-emerald-400' : 'bg-slate-500'
+                  }`}
+                />
               )}
-            </div>
+            </button>
 
             {/* Menu Integrado de Configurações (Qualidade + Velocidade) */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowSettingsMenu(!showSettingsMenu);
-                  setShowSubtitleMenu(false);
-                  setSettingsView('main');
-                }}
-                className="player-menu-trigger h-9 sm:h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
-                title="Configurações (Qualidade e Velocidade)"
-                aria-label="Configurações"
-              >
-                <Settings className="w-4 h-4 text-slate-300" />
-                <span className="hidden sm:inline uppercase text-[11px] font-mono text-slate-300">
-                  {selectedQuality}
-                </span>
-              </button>
-
-              {showSettingsMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="player-menu-content fixed sm:absolute bottom-16 sm:bottom-14 left-3 right-3 sm:left-auto sm:right-0 w-auto sm:w-52 max-w-sm sm:max-w-none mx-auto sm:mx-0 max-h-[60vh] bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-2 shadow-2xl z-50 backdrop-blur-xl overflow-y-auto custom-scrollbar"
-                >
-                  {/* Visão Principal das Configurações */}
-                  {settingsView === 'main' && (
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
-                        <span className="text-xs font-semibold text-slate-200">Configurações</span>
-                        <button
-                          onClick={() => setShowSettingsMenu(false)}
-                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
-                          aria-label="Fechar configurações"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      {/* Opção Qualidade */}
-                      <button
-                        onClick={() => setSettingsView('quality')}
-                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                          <span className="truncate">Qualidade</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
-                          <span className="text-xs uppercase whitespace-nowrap">
-                            {selectedQuality}
-                          </span>
-                          <ChevronRight className="w-3.5 h-3.5 shrink-0" />
-                        </div>
-                      </button>
-
-                      {/* Opção Velocidade */}
-                      <button
-                        onClick={() => setSettingsView('speed')}
-                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group text-left"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Gauge className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                          <span className="truncate">Velocidade</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
-                          <span className="text-xs whitespace-nowrap">
-                            {playbackSpeed === 1 ? 'Normal (1x)' : `${playbackSpeed}x`}
-                          </span>
-                          <ChevronRight className="w-3.5 h-3.5 shrink-0" />
-                        </div>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Submenu de Qualidade */}
-                  {settingsView === 'quality' && (
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setSettingsView('main')}
-                            className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0"
-                            title="Voltar"
-                            aria-label="Voltar"
-                          >
-                            <ChevronLeft className="w-4 h-4" />
-                          </button>
-                          <span className="text-xs font-semibold text-slate-200">Qualidade</span>
-                        </div>
-                        <button
-                          onClick={() => setShowSettingsMenu(false)}
-                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
-                          aria-label="Fechar menu"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      {/* Lista de Resoluções */}
-                      {(['1080p', '720p', '480p', '360p'] as QualityLevel[]).map((q) => (
-                        <button
-                          key={q}
-                          onClick={() => changeQuality(q)}
-                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors ${
-                            selectedQuality === q
-                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                              : 'text-slate-300 hover:bg-slate-800'
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="uppercase">{q}</span>
-                            {q === '1080p' && (
-                              <span className="text-[10px] text-slate-400 font-normal">Full HD</span>
-                            )}
-                            {q === '720p' && (
-                              <span className="text-[10px] text-slate-400 font-normal">HD</span>
-                            )}
-                          </div>
-                          {selectedQuality === q && (
-                            <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Submenu de Velocidade */}
-                  {settingsView === 'speed' && (
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setSettingsView('main')}
-                            className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0"
-                            title="Voltar"
-                            aria-label="Voltar"
-                          >
-                            <ChevronLeft className="w-4 h-4" />
-                          </button>
-                          <span className="text-xs font-semibold text-slate-200">Velocidade</span>
-                        </div>
-                        <button
-                          onClick={() => setShowSettingsMenu(false)}
-                          className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
-                          aria-label="Fechar menu"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      {/* Lista de Velocidades */}
-                      {([0.5, 0.75, 1, 1.25, 1.5, 2] as PlaybackSpeed[]).map((spd) => (
-                        <button
-                          key={spd}
-                          onClick={() => changeSpeed(spd)}
-                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors ${
-                            playbackSpeed === spd
-                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
-                              : 'text-slate-300 hover:bg-slate-800'
-                          }`}
-                        >
-                          <span className="text-xs whitespace-nowrap">{spd === 1 ? '1x' : `${spd}x`}</span>
-                          {playbackSpeed === spd && (
-                            <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSettingsMenu((prev) => !prev);
+                setShowSubtitleMenu(false);
+                setSettingsView('main');
+              }}
+              className="player-menu-trigger shrink-0 h-9 sm:h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+              title="Configurações (Qualidade e Velocidade)"
+              aria-label="Configurações"
+            >
+              <Settings className="w-4 h-4 text-slate-300 shrink-0" />
+              <span className="hidden sm:inline uppercase text-[11px] font-mono text-slate-300">
+                {isHlsActive
+                  ? requestedHlsLevel === -1
+                    ? 'Auto'
+                    : selectedQuality
+                  : displayResolution}
+              </span>
+            </button>
 
             {/* Tela Cheia */}
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 toggleFullscreen();
               }}
               aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
-              className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+              className="shrink-0 w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+              title={isFullscreen ? 'Sair da Tela Cheia (F)' : 'Tela Cheia (F)'}
             >
-              {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+              {isFullscreen ? <Minimize className="w-4 h-4 sm:w-5 sm:h-5" /> : <Maximize className="w-4 h-4 sm:w-5 sm:h-5" />}
             </button>
           </div>
         </div>
+
+        {/* Menu Flutuante de Legendas: Totalmente visível e adaptado para telas mobile e desktop */}
+        {showSubtitleMenu && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="player-subtitle-content fixed sm:absolute bottom-16 sm:bottom-16 right-2 sm:right-6 w-[calc(100%-16px)] sm:w-80 max-w-sm bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-3 sm:p-3.5 shadow-2xl z-50 backdrop-blur-xl overflow-hidden text-slate-200 animate-in fade-in zoom-in-95 duration-150"
+          >
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/90 mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 shrink-0">
+                  <Subtitles className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-white block leading-none">Legendas</span>
+                  <span className="text-[10px] text-slate-400 block leading-none mt-1">Sincronização com arquivo .SRT</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSubtitleMenu(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Fechar menu de legendas"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Conteúdo com arquivo carregado */}
+            {customSubtitle ? (
+              <div className="space-y-2.5">
+                {/* Card do arquivo selecionado */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <FileText className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-white truncate" title={customSubtitle.fileName}>
+                          {customSubtitle.fileName}
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {customSubtitle.cues.length} falas sincronizadas
+                          {customSubtitle.fileSizeBytes ? ` • ${(customSubtitle.fileSizeBytes / 1024).toFixed(1)} KB` : ''}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${
+                        customSubtitle.isEnabled
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      }`}
+                    >
+                      {customSubtitle.isEnabled ? 'Ativa' : 'Desativada'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Botão de Ativar / Desativar Legendas */}
+                <button
+                  type="button"
+                  onClick={handleToggleSubtitle}
+                  className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg font-medium transition-colors cursor-pointer ${
+                    customSubtitle.isEnabled
+                      ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/40'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-750 border border-slate-700/60'
+                  }`}
+                >
+                  <span>{customSubtitle.isEnabled ? 'Desativar exibição da legenda' : 'Ativar exibição da legenda'}</span>
+                  {customSubtitle.isEnabled ? (
+                    <Check className="w-4 h-4 text-indigo-400 shrink-0" />
+                  ) : (
+                    <span className="text-[10px] text-slate-400 font-normal">Oculta</span>
+                  )}
+                </button>
+
+                {/* Ações de Envio / Substituição e Remoção */}
+                <div className="flex items-center gap-2 pt-0.5">
+                  <label
+                    htmlFor="player-srt-file-input"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      subtitleInputRef.current?.click();
+                    }}
+                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-semibold shadow-md transition-all cursor-pointer text-center"
+                  >
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                    <span>Enviar legenda (.SRT)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleRemoveSubtitle}
+                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg border border-slate-800 transition-colors cursor-pointer"
+                    title="Remover legenda"
+                    aria-label="Remover legenda"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Conteúdo quando nenhuma legenda foi enviada */
+              <div className="space-y-3">
+                <div className="p-3 bg-slate-900/70 rounded-xl border border-dashed border-slate-800 text-center">
+                  <p className="text-xs text-slate-200 font-semibold">Nenhuma legenda carregada</p>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    Selecione um arquivo .srt salvo no armazenamento do seu celular Android ou computador.
+                  </p>
+                </div>
+
+                {/* Botão Enviar legenda (.SRT) com acionamento nativo do Android */}
+                <label
+                  htmlFor="player-srt-file-input"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    subtitleInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer text-center"
+                >
+                  <Upload className="w-4 h-4 text-white shrink-0" />
+                  <span>Enviar legenda (.SRT)</span>
+                </label>
+
+                {/* Opção rápida de teste com arquivo de demonstração */}
+                <button
+                  type="button"
+                  onClick={handleLoadDemoSrt}
+                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800/80 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-lg text-[11px] font-medium transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span>Testar com legenda de exemplo</span>
+                </button>
+              </div>
+            )}
+
+            {/* Mensagem de Erro de Parsing, se houver */}
+            {subtitleError && (
+              <div className="mt-2.5 p-2 bg-red-950/60 border border-red-800/60 rounded-lg flex items-start gap-1.5 text-red-300 text-[11px] leading-tight">
+                <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                <span>{subtitleError}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Menu Flutuante de Configurações (Qualidade e Velocidade): Totalmente visível no mobile */}
+        {showSettingsMenu && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="player-menu-content absolute bottom-16 sm:bottom-16 right-2 sm:right-6 w-[calc(100%-16px)] sm:w-64 max-w-sm max-h-[65vh] bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-2.5 shadow-2xl z-50 backdrop-blur-xl overflow-y-auto custom-scrollbar"
+          >
+            {/* Visão Principal das Configurações */}
+            {settingsView === 'main' && (
+              <div className="space-y-0.5">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                  <span className="text-xs font-semibold text-slate-200">Configurações</span>
+                  <button
+                    onClick={() => setShowSettingsMenu(false)}
+                    className="text-slate-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                    aria-label="Fechar configurações"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Opção Qualidade */}
+                <button
+                  type="button"
+                  onClick={() => setSettingsView('quality')}
+                  className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <span className="truncate">Qualidade</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
+                    <span className="text-xs uppercase whitespace-nowrap">
+                      {isHlsActive
+                        ? requestedHlsLevel === -1
+                          ? `Auto (${displayResolution})`
+                          : selectedQuality
+                        : displayResolution}
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  </div>
+                </button>
+
+                {/* Opção Velocidade */}
+                <button
+                  type="button"
+                  onClick={() => setSettingsView('speed')}
+                  className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 rounded-md transition-colors group text-left cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Gauge className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <span className="truncate">Velocidade</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-slate-400 group-hover:text-slate-200 shrink-0 ml-2">
+                    <span className="text-xs whitespace-nowrap">
+                      {playbackSpeed === 1 ? 'Normal (1x)' : `${playbackSpeed}x`}
+                    </span>
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  </div>
+                </button>
+              </div>
+            )}
+
+            {/* Submenu de Qualidade */}
+            {settingsView === 'quality' && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSettingsView('main')}
+                      className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0 cursor-pointer"
+                      title="Voltar"
+                      aria-label="Voltar"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-xs font-semibold text-slate-200">Qualidade</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsMenu(false)}
+                    className="text-slate-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                    aria-label="Fechar menu"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Feedback visual durante a troca de variante no HLS */}
+                {isLevelSwitchPending && (
+                  <div className="px-2 py-1 bg-indigo-950/60 border border-indigo-700/60 rounded-md text-[10px] text-indigo-300 flex items-center gap-1.5 mb-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping shrink-0" />
+                    <span>Alternando variante sem reiniciar vídeo...</span>
+                  </div>
+                )}
+
+                {/* Cenário 1: Transmissão HLS Adaptativa */}
+                {isHlsActive ? (
+                  availableLevels.length > 1 ? (
+                    <div className="space-y-1">
+                      {/* Opção Automático (ABR - Adaptive Bitrate) */}
+                      {availableLevels
+                        .filter((lvl) => lvl.levelIndex === -1)
+                        .map((_autoLvl) => {
+                          const isAuto = requestedHlsLevel === -1;
+                          return (
+                            <button
+                              key="hls-level-auto"
+                              type="button"
+                              onClick={() => changeQuality('auto', -1)}
+                              className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors cursor-pointer ${
+                                isAuto
+                                  ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                                  : 'text-slate-300 hover:bg-slate-800'
+                              }`}
+                            >
+                              <div className="flex flex-col text-left">
+                                <span className="text-xs font-medium">Automático</span>
+                                <span className="text-[10px] text-slate-400">
+                                  {displayResolution !== 'N/D'
+                                    ? `Ativo: ${displayResolution}`
+                                    : 'Ajuste dinâmico de rede'}
+                                </span>
+                              </div>
+                              {isAuto && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                            </button>
+                          );
+                        })}
+
+                      <div className="pt-1 pb-0.5 px-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        Variantes Disponíveis na Fonte
+                      </div>
+
+                      {/* Lista das Variantes Reais do Manifesto HLS com troca real */}
+                      {availableLevels
+                        .filter((lvl) => lvl.levelIndex >= 0)
+                        .map((lvl) => {
+                          const isSelected = requestedHlsLevel === lvl.levelIndex;
+                          const bitrateKbps = lvl.bitrate ? Math.round(lvl.bitrate / 1000) : null;
+                          const bitrateLabel = bitrateKbps
+                            ? bitrateKbps >= 1000
+                              ? `${(bitrateKbps / 1000).toFixed(1)} Mbps`
+                              : `${bitrateKbps} kbps`
+                            : null;
+
+                          return (
+                            <button
+                              key={`hls-level-${lvl.levelIndex}`}
+                              type="button"
+                              onClick={() =>
+                                changeQuality(lvl.resolution.toLowerCase() as QualityLevel, lvl.levelIndex)
+                              }
+                              className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                                  : 'text-slate-300 hover:bg-slate-800'
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span className="uppercase font-medium">{lvl.resolution}</span>
+                                {bitrateLabel && (
+                                  <span className="text-[10px] text-slate-400 font-normal">
+                                    {bitrateLabel}
+                                  </span>
+                                )}
+                              </div>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="p-3 text-center text-xs text-slate-400">
+                      <span className="block text-indigo-400 font-medium mb-1">Transmissão HLS</span>
+                      <span>Carregando manifesto de variantes...</span>
+                    </div>
+                  )
+                ) : video.qualityVariants && video.qualityVariants.length > 1 ? (
+                  /* Cenário 2: Variantes Diretas registradas em metadados */
+                  <div className="space-y-1">
+                    <div className="px-2 py-0.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      Resoluções Disponíveis
+                    </div>
+                    {video.qualityVariants.map((v) => {
+                      const isSelected = selectedQuality.toLowerCase() === v.quality.toLowerCase();
+                      return (
+                        <button
+                          key={v.quality}
+                          type="button"
+                          onClick={() => changeQuality(v.quality)}
+                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                              : 'text-slate-300 hover:bg-slate-800'
+                          }`}
+                        >
+                          <span className="uppercase">{v.quality}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  /* Cenário 3: Arquivo Único (MP4 / WebM / Local) — Não simula qualidades inexistentes */
+                  <div className="space-y-2 p-1">
+                    <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5 flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-bold text-white uppercase">{displayResolution}</span>
+                        <span className="block text-[10px] text-slate-400">
+                          {isHlsActive ? 'Transmissão de Nível Único' : 'Arquivo Único Direto (MP4/WebM)'}
+                        </span>
+                      </div>
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                    </div>
+
+                    <div className="p-2.5 bg-amber-950/40 border border-amber-800/50 rounded-lg text-amber-200 text-[11px] leading-relaxed">
+                      <div className="flex items-center gap-1.5 font-semibold text-amber-300 mb-1">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>Resolução Fixa na Fonte</span>
+                      </div>
+                      <p>
+                        Esta URL aponta diretamente para um único arquivo de vídeo em {displayResolution}. A fonte
+                        remota não possui variantes adicionais (720p ou 480p).
+                      </p>
+                      <p className="mt-1.5 text-[10px] text-amber-300/80">
+                        O player não simula trocas falsas de resolução. Para alternar a qualidade visual em tempo real, utilize uma transmissão HLS (.m3u8).
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Submenu de Velocidade */}
+            {settingsView === 'speed' && (
+              <div className="space-y-0.5">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-slate-800/80 mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSettingsView('main')}
+                      className="text-indigo-400 hover:text-white p-0.5 -ml-1 rounded hover:bg-slate-800/70 active:bg-slate-800 transition-colors flex items-center justify-center shrink-0 cursor-pointer"
+                      title="Voltar"
+                      aria-label="Voltar"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-xs font-semibold text-slate-200">Velocidade</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsMenu(false)}
+                    className="text-slate-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                    aria-label="Fechar menu"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Lista de Velocidades */}
+                {([0.5, 0.75, 1, 1.25, 1.5, 2] as PlaybackSpeed[]).map((spd) => (
+                  <button
+                    key={spd}
+                    type="button"
+                    onClick={() => changeSpeed(spd)}
+                    className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded-md transition-colors cursor-pointer ${
+                      playbackSpeed === spd
+                        ? 'bg-indigo-600/30 text-indigo-300 font-semibold'
+                        : 'text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="text-xs whitespace-nowrap">{spd === 1 ? '1x' : `${spd}x`}</span>
+                    {playbackSpeed === spd && (
+                      <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
