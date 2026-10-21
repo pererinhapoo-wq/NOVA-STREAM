@@ -15,6 +15,21 @@ export interface VideoSubtitles {
   src?: string;
 }
 
+export interface SubtitleCue {
+  id?: string;
+  start: number; // segundos com precisão decimal
+  end: number;   // segundos com precisão decimal
+  text: string;
+}
+
+export interface ActiveSubtitleFile {
+  fileName: string;
+  fileSizeBytes?: number;
+  cues: SubtitleCue[];
+  vttBlobUrl?: string;
+  isEnabled: boolean;
+}
+
 export interface VideoItem {
   id: string;
   title: string;

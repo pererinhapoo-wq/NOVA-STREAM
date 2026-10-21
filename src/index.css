@@ -83,3 +83,9 @@
 .animate-seek-feedback {
   animation: seekRipple 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* Oculta legendas nativas do navegador para garantir renderização perfeita no overlay customizado */
+video::cue {
+  display: none;
+  opacity: 0;
+}

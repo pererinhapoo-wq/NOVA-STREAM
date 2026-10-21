@@ -21,6 +21,10 @@ import {
   Sparkles,
   ChevronRight,
   ChevronLeft,
+  Upload,
+  FileText,
+  Trash2,
+  AlertCircle,
 } from 'lucide-react';
 import {
   VideoItem,
@@ -28,6 +32,8 @@ import {
   PlaybackSpeed,
   VideoResolution,
   StreamQualityOption,
+  ActiveSubtitleFile,
+  SubtitleCue,
 } from '../../types/video';
 import {
   getLocalVideoUrl,
@@ -35,6 +41,11 @@ import {
   formatDuration,
   formatQualityLabel,
 } from '../../services/videoData';
+import {
+  parseSrt,
+  getActiveSubtitleText,
+  readSubtitleFileAsync,
+} from '../../services/subtitleParser';
 
 export interface VideoMetadataUpdates {
   duration?: number;
@@ -110,6 +121,12 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       clearTimeout(switchTimeoutRef.current);
       switchTimeoutRef.current = null;
     }
+    if (customSubtitleRef.current?.vttBlobUrl) {
+      URL.revokeObjectURL(customSubtitleRef.current.vttBlobUrl);
+    }
+    setCustomSubtitle(null);
+    setSubtitleError(null);
+    setShowSubtitleMenu(false);
   }, [video.id, video.resolution]);
 
   // Resolução efetiva para exibição honesta
@@ -131,6 +148,15 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   type SettingsView = 'main' | 'quality' | 'speed';
   const [settingsView, setSettingsView] = useState<SettingsView>('main');
   const [videoError, setVideoError] = useState<string | null>(null);
+
+  // Estados de Legendas SRT (upload direto no celular Android ou computador)
+  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+  const [customSubtitle, setCustomSubtitle] = useState<ActiveSubtitleFile | null>(null);
+  const [subtitleError, setSubtitleError] = useState<string | null>(null);
+  const [isUploadingSubtitle, setIsUploadingSubtitle] = useState(false);
+  const subtitleInputRef = useRef<HTMLInputElement>(null);
+  const customSubtitleRef = useRef<ActiveSubtitleFile | null>(null);
+  customSubtitleRef.current = customSubtitle;
 
   // Estados de feedback visual (Play/Pause central e Double-Tap Seek estilo YouTube)
   const [playPauseFeedback, setPlayPauseFeedback] = useState<'play' | 'pause' | null>(null);
@@ -368,11 +394,11 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       clearTimeout(controlsTimeoutRef.current);
     }
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsMenu) {
+      if (isPlaying && !showSettingsMenu && !showSubtitleMenu) {
         setControlsVisible(false);
       }
     }, 3500);
-  }, [isPlaying, showSettingsMenu]);
+  }, [isPlaying, showSettingsMenu, showSubtitleMenu]);
 
   // Disparar animação suave e discreta de Play / Pause no centro
   const triggerPlayPauseFeedback = useCallback((type: 'play' | 'pause') => {
@@ -442,6 +468,8 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         target.closest('button') ||
         target.closest('.player-menu-content') ||
         target.closest('.player-menu-trigger') ||
+        target.closest('.player-subtitle-content') ||
+        target.closest('.player-subtitle-trigger') ||
         target.closest('.group\\/progress') ||
         target.closest('input')
       ) {
@@ -698,6 +726,93 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     }
   };
 
+  // Handlers para upload, alternância e remoção de legendas SRT
+  const handleSubtitleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingSubtitle(true);
+    setSubtitleError(null);
+
+    try {
+      const content = await readSubtitleFileAsync(file);
+      const parsed = parseSrt(content);
+
+      if (parsed.error || parsed.cues.length === 0) {
+        setSubtitleError(
+          parsed.error || 'Não foi possível encontrar marcações de tempo válidas no arquivo SRT.'
+        );
+        setIsUploadingSubtitle(false);
+        return;
+      }
+
+      // Revoga URL blob anterior para evitar consumo de memória
+      if (customSubtitle?.vttBlobUrl) {
+        URL.revokeObjectURL(customSubtitle.vttBlobUrl);
+      }
+
+      const vttBlob = new Blob([parsed.vttContent], { type: 'text/vtt;charset=utf-8' });
+      const blobUrl = URL.createObjectURL(vttBlob);
+
+      setCustomSubtitle({
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        cues: parsed.cues,
+        vttBlobUrl: blobUrl,
+        isEnabled: true,
+      });
+      setSubtitleError(null);
+    } catch (err: any) {
+      console.error('Erro ao ler arquivo de legenda:', err);
+      setSubtitleError(err?.message || 'Falha ao ler o arquivo selecionado no dispositivo.');
+    } finally {
+      setIsUploadingSubtitle(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleToggleSubtitle = () => {
+    if (!customSubtitle) return;
+    setCustomSubtitle((prev) => (prev ? { ...prev, isEnabled: !prev.isEnabled } : null));
+  };
+
+  const handleRemoveSubtitle = () => {
+    if (customSubtitle?.vttBlobUrl) {
+      URL.revokeObjectURL(customSubtitle.vttBlobUrl);
+    }
+    setCustomSubtitle(null);
+    setSubtitleError(null);
+  };
+
+  const handleLoadDemoSrt = () => {
+    const demoSrt = `1
+00:00:01,000 --> 00:00:04,500
+NOVA STREAM · Legenda sincronizada ativa!
+
+2
+00:00:05,000 --> 00:00:09,000
+Compatível com arquivos .srt do celular Android e desktop.
+
+3
+00:00:09,500 --> 00:00:14,000
+Você pode desativar, reativar ou substituir a legenda a qualquer momento.
+`;
+    const parsed = parseSrt(demoSrt);
+    if (customSubtitle?.vttBlobUrl) {
+      URL.revokeObjectURL(customSubtitle.vttBlobUrl);
+    }
+    const vttBlob = new Blob([parsed.vttContent], { type: 'text/vtt;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(vttBlob);
+    setCustomSubtitle({
+      fileName: 'legenda_exemplo_novastream.srt',
+      fileSizeBytes: 275,
+      cues: parsed.cues,
+      vttBlobUrl: blobUrl,
+      isEnabled: true,
+    });
+    setSubtitleError(null);
+  };
+
   // Teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -724,6 +839,9 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       } else if (e.key === 'm' || e.key === 'M') {
         e.preventDefault();
         toggleMute();
+      } else if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        setCustomSubtitle((prev) => (prev ? { ...prev, isEnabled: !prev.isEnabled } : null));
       } else if (e.code === 'Escape') {
         if (isFullscreen) {
           document.exitFullscreen().catch(() => {});
@@ -746,16 +864,28 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // Fechar menu de configurações ao clicar fora
+  // Fechar menus de configurações e de legendas ao clicar fora
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.player-menu-trigger') && !target.closest('.player-menu-content')) {
         setShowSettingsMenu(false);
       }
+      if (!target.closest('.player-subtitle-trigger') && !target.closest('.player-subtitle-content')) {
+        setShowSubtitleMenu(false);
+      }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  // Limpeza de Blob URL de legendas ao desmontar
+  useEffect(() => {
+    return () => {
+      if (customSubtitleRef.current?.vttBlobUrl) {
+        URL.revokeObjectURL(customSubtitleRef.current.vttBlobUrl);
+      }
+    };
   }, []);
 
   // Limpeza de timers ao desmontar o componente
@@ -771,6 +901,12 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPercent = duration > 0 ? (bufferedTime / duration) * 100 : 0;
 
+  // Legenda sincronizada ativa no momento da reprodução
+  const activeCustomSubtitleText =
+    customSubtitle && customSubtitle.isEnabled
+      ? getActiveSubtitleText(customSubtitle.cues, currentTime)
+      : '';
+
   return (
     <div
       ref={containerRef}
@@ -780,7 +916,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       className="relative w-full h-full min-h-[340px] md:min-h-[520px] bg-black flex items-center justify-center select-none overflow-hidden group touch-manipulation"
       style={{ touchAction: 'manipulation' }}
     >
-      {/* Elemento de Vídeo HTML5 com suporte a HLS.js adaptativo e decodificação nativa */}
+      {/* Elemento de Vídeo HTML5 com suporte a HLS.js adaptativo, decodificação nativa e track de legendas */}
       <video
         ref={videoRef}
         src={isHlsActive && Hls.isSupported() ? undefined : effectiveVideoUrl}
@@ -804,7 +940,18 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
           }
         }}
         className="w-full h-full object-contain cursor-pointer max-h-screen"
-      />
+      >
+        {customSubtitle?.vttBlobUrl && (
+          <track
+            key={customSubtitle.vttBlobUrl}
+            kind="subtitles"
+            src={customSubtitle.vttBlobUrl}
+            srcLang="pt"
+            label={customSubtitle.fileName}
+            default={customSubtitle.isEnabled}
+          />
+        )}
+      </video>
 
       {/* Fallback caso a fonte falhe */}
       {videoError && (
@@ -827,8 +974,21 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Exibição simulada de Legenda na tela */}
-      {activeSubtitle !== 'none' && isPlaying && currentTime > 2 && currentTime < duration - 2 && (
+      {/* Exibição em tela da Legenda SRT Sincronizada (com posicionamento adaptativo aos controles) */}
+      {activeCustomSubtitleText && (
+        <div
+          className={`absolute left-1/2 -translate-x-1/2 pointer-events-none px-3.5 py-1.5 sm:px-4 sm:py-2 bg-black/85 backdrop-blur-xs rounded-lg text-center max-w-[92%] sm:max-w-xl md:max-w-2xl z-20 border border-white/10 shadow-2xl transition-all duration-200 ${
+            controlsVisible ? 'bottom-20 sm:bottom-24' : 'bottom-8 sm:bottom-12'
+          }`}
+        >
+          <p className="text-sm sm:text-base md:text-lg font-medium text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)] leading-snug whitespace-pre-line tracking-wide">
+            {activeCustomSubtitleText}
+          </p>
+        </div>
+      )}
+
+      {/* Exibição simulada de Legenda legada apenas quando nenhuma legenda SRT estiver carregada */}
+      {!customSubtitle && activeSubtitle !== 'none' && isPlaying && currentTime > 2 && currentTime < duration - 2 && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-none px-4 py-1.5 bg-black/75 rounded text-center max-w-lg z-20">
           <p className="text-sm md:text-base font-medium text-white drop-shadow">
             {video.isLocalFile
@@ -1032,8 +1192,167 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Lado Direito: Menu Unificado de Configurações e Fullscreen */}
+          {/* Lado Direito: Legendas (CC), Menu Unificado de Configurações e Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2">
+            {/* Input de arquivo de legenda oculto para seleção nativa no celular Android e desktop */}
+            <input
+              ref={subtitleInputRef}
+              type="file"
+              accept=".srt,.vtt,text/plain,application/x-subrip"
+              onChange={handleSubtitleFileSelect}
+              className="hidden"
+              aria-label="Selecionar arquivo de legenda SRT"
+            />
+
+            {/* Menu de Legendas (CC) */}
+            <div className="relative">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowSubtitleMenu(!showSubtitleMenu);
+                  setShowSettingsMenu(false);
+                }}
+                className={`player-subtitle-trigger h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium rounded-lg transition-colors ${
+                  customSubtitle?.isEnabled
+                    ? 'text-indigo-400 bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Legendas (SRT)"
+                aria-label="Legendas"
+              >
+                <Subtitles className="w-4 h-4" />
+                <span className="text-[11px] font-semibold tracking-wide uppercase">CC</span>
+              </button>
+
+              {showSubtitleMenu && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="player-subtitle-content absolute bottom-12 right-0 w-64 sm:w-72 max-w-[calc(100vw-1.5rem)] bg-[#12131A]/95 border border-slate-800/90 rounded-xl p-2.5 shadow-2xl z-50 backdrop-blur-md overflow-hidden text-slate-200"
+                >
+                  {/* Cabeçalho */}
+                  <div className="flex items-center justify-between px-1 pb-2 border-b border-slate-800/80 mb-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <Subtitles className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-semibold text-slate-100">Legendas</span>
+                    </div>
+                    <button
+                      onClick={() => setShowSubtitleMenu(false)}
+                      className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                      aria-label="Fechar menu de legendas"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Conteúdo com arquivo carregado */}
+                  {customSubtitle ? (
+                    <div className="space-y-2">
+                      {/* Card do arquivo selecionado */}
+                      <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2 min-w-0">
+                            <FileText className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-white truncate" title={customSubtitle.fileName}>
+                                {customSubtitle.fileName}
+                              </p>
+                              <p className="text-[10px] text-slate-400">
+                                {customSubtitle.cues.length} falas sincronizadas
+                                {customSubtitle.fileSizeBytes ? ` • ${(customSubtitle.fileSizeBytes / 1024).toFixed(1)} KB` : ''}
+                              </p>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                              customSubtitle.isEnabled
+                                ? 'bg-indigo-500/20 text-indigo-300'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {customSubtitle.isEnabled ? 'Ativa' : 'Desativada'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Botão de Ativar / Desativar Legendas */}
+                      <button
+                        onClick={handleToggleSubtitle}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 text-xs rounded-lg font-medium transition-colors ${
+                          customSubtitle.isEnabled
+                            ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30'
+                            : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>{customSubtitle.isEnabled ? 'Desativar legendas' : 'Ativar legendas'}</span>
+                        {customSubtitle.isEnabled ? (
+                          <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Desligada</span>
+                        )}
+                      </button>
+
+                      {/* Ações de Substituição e Remoção */}
+                      <div className="flex items-center gap-1.5 pt-0.5">
+                        <button
+                          onClick={() => subtitleInputRef.current?.click()}
+                          disabled={isUploadingSubtitle}
+                          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 hover:text-white rounded-md text-xs font-medium transition-colors"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>Substituir (.srt)</span>
+                        </button>
+                        <button
+                          onClick={handleRemoveSubtitle}
+                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                          title="Remover legenda"
+                          aria-label="Remover legenda"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Conteúdo quando nenhuma legenda foi enviada */
+                    <div className="space-y-2.5">
+                      <div className="p-2.5 bg-slate-900/60 rounded-lg border border-dashed border-slate-800 text-center">
+                        <p className="text-xs text-slate-300 font-medium">Nenhuma legenda carregada</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Selecione um arquivo .srt do seu celular ou computador para sincronizar com o vídeo.
+                        </p>
+                      </div>
+
+                      {/* Botão Enviar legenda (.srt) */}
+                      <button
+                        onClick={() => subtitleInputRef.current?.click()}
+                        disabled={isUploadingSubtitle}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white rounded-lg text-xs font-semibold shadow-md transition-all"
+                      >
+                        <Upload className="w-4 h-4" />
+                        <span>Enviar legenda (.srt)</span>
+                      </button>
+
+                      {/* Opção rápida de teste */}
+                      <button
+                        onClick={handleLoadDemoSrt}
+                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 bg-slate-800/80 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-md text-[11px] font-medium transition-colors"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Testar com legenda de exemplo</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Mensagem de Erro de Parsing, se houver */}
+                  {subtitleError && (
+                    <div className="mt-2.5 p-2 bg-red-950/60 border border-red-800/60 rounded-lg flex items-start gap-1.5 text-red-300 text-[11px] leading-tight">
+                      <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                      <span>{subtitleError}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Menu Integrado de Configurações (Qualidade + Velocidade) */}
             <div className="relative">
               <button
