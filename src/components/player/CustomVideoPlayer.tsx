@@ -387,18 +387,43 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const showSettingsMenuRef = useRef(showSettingsMenu);
+  showSettingsMenuRef.current = showSettingsMenu;
+  const showSubtitleMenuRef = useRef(showSubtitleMenu);
+  showSubtitleMenuRef.current = showSubtitleMenu;
+
   // Resetar timer para ocultar controles
   const showControlsTemporarily = useCallback(() => {
     setControlsVisible(true);
     if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+    // Não ocultar automaticamente se o menu de legendas ou configurações estiver aberto
+    if (showSettingsMenuRef.current || showSubtitleMenuRef.current) {
+      return;
     }
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying && !showSettingsMenu && !showSubtitleMenu) {
+      if (isPlayingRef.current && !showSettingsMenuRef.current && !showSubtitleMenuRef.current) {
         setControlsVisible(false);
       }
     }, 3500);
-  }, [isPlaying, showSettingsMenu, showSubtitleMenu]);
+  }, []);
+
+  // Mantém os controles sempre visíveis e cancela auto-hide enquanto qualquer menu estiver aberto
+  useEffect(() => {
+    if (showSubtitleMenu || showSettingsMenu) {
+      setControlsVisible(true);
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = null;
+      }
+    } else if (isPlaying) {
+      showControlsTemporarily();
+    }
+  }, [showSubtitleMenu, showSettingsMenu, isPlaying, showControlsTemporarily]);
 
   // Disparar animação suave e discreta de Play / Pause no centro
   const triggerPlayPauseFeedback = useCallback((type: 'play' | 'pause') => {
@@ -476,6 +501,20 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         return;
       }
 
+      // Se o menu de legendas ou configurações estiver aberto, fechar os menus em vez de pausar
+      if (showSubtitleMenuRef.current || showSettingsMenuRef.current) {
+        setShowSubtitleMenu(false);
+        setShowSettingsMenu(false);
+        showControlsTemporarily();
+        return;
+      }
+
+      // Se os controles estiverem invisíveis, o primeiro toque apenas exibe os controles
+      if (!controlsVisible) {
+        showControlsTemporarily();
+        return;
+      }
+
       const container = containerRef.current;
       if (!container) return;
 
@@ -534,7 +573,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
         }, DOUBLE_TAP_WINDOW);
       }
     },
-    [triggerDoubleTapSeek, triggerPlayPauseFeedback, showControlsTemporarily]
+    [triggerDoubleTapSeek, triggerPlayPauseFeedback, showControlsTemporarily, controlsVisible]
   );
 
   // Atualização de tempo do vídeo
@@ -731,6 +770,13 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Se o usuário selecionou acidentalmente um arquivo de mídia binária (vídeo, áudio ou imagem)
+    if (file.type.startsWith('video/') || file.type.startsWith('image/') || file.type.startsWith('audio/')) {
+      setSubtitleError('O arquivo selecionado é uma mídia, não um arquivo de legenda. Por favor, escolha um arquivo com extensão .srt.');
+      e.target.value = '';
+      return;
+    }
+
     setIsUploadingSubtitle(true);
     setSubtitleError(null);
 
@@ -740,7 +786,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
 
       if (parsed.error || parsed.cues.length === 0) {
         setSubtitleError(
-          parsed.error || 'Não foi possível encontrar marcações de tempo válidas no arquivo SRT.'
+          parsed.error || 'Não foi possível encontrar marcações de tempo válidas no arquivo .srt selecionado.'
         );
         setIsUploadingSubtitle(false);
         return;
@@ -764,7 +810,7 @@ export const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({
       setSubtitleError(null);
     } catch (err: any) {
       console.error('Erro ao ler arquivo de legenda:', err);
-      setSubtitleError(err?.message || 'Falha ao ler o arquivo selecionado no dispositivo.');
+      setSubtitleError(err?.message || 'Falha ao ler o arquivo selecionado no seu celular.');
     } finally {
       setIsUploadingSubtitle(false);
       e.target.value = '';
@@ -1002,9 +1048,9 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
         </div>
       )}
 
-      {/* Barra superior com botão Fechar */}
+      {/* Barra superior com botão Fechar e status de Legenda */}
       <div
-        className={`absolute top-0 left-0 right-0 p-3 sm:p-5 bg-gradient-to-b from-black/80 via-black/30 to-transparent transition-opacity duration-300 z-30 flex items-center justify-between pointer-events-none ${
+        className={`absolute top-0 left-0 right-0 p-3 sm:p-5 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 z-30 flex items-center justify-between pointer-events-none ${
           controlsVisible ? 'opacity-100' : 'opacity-0'
         }`}
       >
@@ -1018,6 +1064,28 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
         >
           <X className="w-5 h-5" />
         </button>
+
+        {/* Informação do vídeo e atalho de status da legenda */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          {customSubtitle && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSubtitleMenu(true);
+                setShowSettingsMenu(false);
+              }}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border flex items-center gap-1.5 backdrop-blur-md transition-colors cursor-pointer ${
+                customSubtitle.isEnabled
+                  ? 'bg-indigo-600/35 text-indigo-200 border-indigo-500/50 hover:bg-indigo-600/50'
+                  : 'bg-slate-900/80 text-slate-400 border-slate-700/70 hover:bg-slate-850'
+              }`}
+              title="Gerenciar legenda"
+            >
+              <Subtitles className="w-3.5 h-3.5" />
+              <span>{customSubtitle.isEnabled ? 'CC Ativa' : 'CC Desativada'}</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Feedback central discreto e suave de Play / Pause */}
@@ -1114,17 +1182,17 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
         {/* Linha de Botões de Controle */}
         <div
           onClick={(e) => e.stopPropagation()}
-          className="flex items-center justify-between gap-2 text-slate-200"
+          className="flex items-center justify-between gap-1.5 sm:gap-2 text-slate-200"
         >
           {/* Lado Esquerdo: Play, Voltar 10s, Avançar 10s, Volume, Tempo */}
-          <div className="flex items-center gap-1 sm:gap-2">
+          <div className="flex items-center gap-1 sm:gap-2 min-w-0">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 togglePlay();
               }}
               aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
-              className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+              className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
             >
               {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current" />}
             </button>
@@ -1135,7 +1203,7 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
                 seekRelative(-10);
               }}
               aria-label="Voltar 10 segundos"
-              className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden xs:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
               title="Voltar 10s"
             >
               <RotateCcw className="w-4 h-4" />
@@ -1147,21 +1215,21 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
                 seekRelative(10);
               }}
               aria-label="Avançar 10 segundos"
-              className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+              className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 hidden xs:flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 active:scale-95 transition-all"
               title="Avançar 10s"
             >
               <RotateCw className="w-4 h-4" />
             </button>
 
-            {/* Controle de Volume */}
-            <div className="flex items-center group/vol">
+            {/* Controle de Volume (oculto no mobile compacto pois smartphones usam botões físicos de volume) */}
+            <div className="hidden sm:flex items-center group/vol shrink-0">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleMute();
                 }}
                 aria-label={isMuted ? 'Ativar som' : 'Desativar som'}
-                className="w-10 h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+                className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center hover:text-white rounded-lg hover:bg-white/10 transition-colors"
               >
                 {isMuted || volume === 0 ? (
                   <VolumeX className="w-5 h-5 text-red-400" />
@@ -1185,7 +1253,7 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
             </div>
 
             {/* Marcação de Tempo */}
-            <div className="text-xs font-mono text-slate-300 ml-1 sm:ml-2 tabular-nums">
+            <div className="text-[11px] sm:text-xs font-mono text-slate-300 ml-0.5 sm:ml-2 tabular-nums whitespace-nowrap">
               <span>{formatTime(currentTime)}</span>
               <span className="text-slate-500 mx-1">/</span>
               <span>{formatTime(duration)}</span>
@@ -1193,80 +1261,96 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
           </div>
 
           {/* Lado Direito: Legendas (CC), Menu Unificado de Configurações e Fullscreen */}
-          <div className="flex items-center gap-1 sm:gap-2">
-            {/* Input de arquivo de legenda oculto para seleção nativa no celular Android e desktop */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            {/* Input de arquivo de legenda oculto com suporte total a seleção nativa no celular Android e desktop */}
             <input
               ref={subtitleInputRef}
               type="file"
-              accept=".srt,.vtt,text/plain,application/x-subrip"
+              accept=".srt,.vtt,text/plain,text/*,application/x-subrip,application/octet-stream,*/*"
               onChange={handleSubtitleFileSelect}
               className="hidden"
               aria-label="Selecionar arquivo de legenda SRT"
             />
 
-            {/* Menu de Legendas (CC) */}
+            {/* Botão de Legendas (CC) — Principal, altamente visível no layout mobile e desktop */}
             <div className="relative">
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowSubtitleMenu(!showSubtitleMenu);
                   setShowSettingsMenu(false);
                 }}
-                className={`player-subtitle-trigger h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium rounded-lg transition-colors ${
+                className={`player-subtitle-trigger h-9 sm:h-10 px-2.5 sm:px-3 flex items-center gap-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
                   customSubtitle?.isEnabled
-                    ? 'text-indigo-400 bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                    ? 'bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-600/30'
+                    : customSubtitle
+                      ? 'bg-slate-800 text-indigo-300 border-slate-700 hover:bg-slate-700'
+                      : 'bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white border-slate-700/80'
                 }`}
                 title="Legendas (SRT)"
-                aria-label="Legendas"
+                aria-label="Legendas (CC)"
               >
-                <Subtitles className="w-4 h-4" />
-                <span className="text-[11px] font-semibold tracking-wide uppercase">CC</span>
+                <Subtitles className={`w-4 h-4 shrink-0 ${customSubtitle?.isEnabled ? 'text-white' : 'text-indigo-400'}`} />
+                <span className="text-[11px] sm:text-xs uppercase tracking-wider font-bold">CC</span>
+                {customSubtitle && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      customSubtitle.isEnabled ? 'bg-emerald-400' : 'bg-slate-500'
+                    }`}
+                  />
+                )}
               </button>
 
+              {/* Menu de Legendas: responsivo e centrado em telas mobile para nunca cortar */}
               {showSubtitleMenu && (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className="player-subtitle-content absolute bottom-12 right-0 w-64 sm:w-72 max-w-[calc(100vw-1.5rem)] bg-[#12131A]/95 border border-slate-800/90 rounded-xl p-2.5 shadow-2xl z-50 backdrop-blur-md overflow-hidden text-slate-200"
+                  className="player-subtitle-content fixed sm:absolute bottom-16 sm:bottom-14 left-3 right-3 sm:left-auto sm:right-0 w-auto sm:w-80 max-w-sm sm:max-w-none mx-auto sm:mx-0 bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-3 sm:p-3.5 shadow-2xl z-50 backdrop-blur-xl overflow-hidden text-slate-200 animate-in fade-in zoom-in-95 duration-150"
                 >
                   {/* Cabeçalho */}
-                  <div className="flex items-center justify-between px-1 pb-2 border-b border-slate-800/80 mb-2.5">
-                    <div className="flex items-center gap-1.5">
-                      <Subtitles className="w-4 h-4 text-indigo-400" />
-                      <span className="text-xs font-semibold text-slate-100">Legendas</span>
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/90 mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                        <Subtitles className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-white block leading-none">Legendas</span>
+                        <span className="text-[10px] text-slate-400 block leading-none mt-1">Sincronização com arquivo .SRT</span>
+                      </div>
                     </div>
                     <button
                       onClick={() => setShowSubtitleMenu(false)}
-                      className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                      className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-slate-800 transition-colors"
                       aria-label="Fechar menu de legendas"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
 
                   {/* Conteúdo com arquivo carregado */}
                   {customSubtitle ? (
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       {/* Card do arquivo selecionado */}
-                      <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2">
+                      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5">
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-start gap-2 min-w-0">
                             <FileText className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
                             <div className="min-w-0">
-                              <p className="text-xs font-medium text-white truncate" title={customSubtitle.fileName}>
+                              <p className="text-xs font-semibold text-white truncate" title={customSubtitle.fileName}>
                                 {customSubtitle.fileName}
                               </p>
-                              <p className="text-[10px] text-slate-400">
+                              <p className="text-[11px] text-slate-400 mt-0.5">
                                 {customSubtitle.cues.length} falas sincronizadas
                                 {customSubtitle.fileSizeBytes ? ` • ${(customSubtitle.fileSizeBytes / 1024).toFixed(1)} KB` : ''}
                               </p>
                             </div>
                           </div>
                           <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${
                               customSubtitle.isEnabled
-                                ? 'bg-indigo-500/20 text-indigo-300'
-                                : 'bg-slate-800 text-slate-400'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-slate-800 text-slate-400 border border-slate-700'
                             }`}
                           >
                             {customSubtitle.isEnabled ? 'Ativa' : 'Desativada'}
@@ -1276,67 +1360,72 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
 
                       {/* Botão de Ativar / Desativar Legendas */}
                       <button
+                        type="button"
                         onClick={handleToggleSubtitle}
-                        className={`w-full flex items-center justify-between px-2.5 py-2 text-xs rounded-lg font-medium transition-colors ${
+                        className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-lg font-medium transition-colors cursor-pointer ${
                           customSubtitle.isEnabled
-                            ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/30'
-                            : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
+                            ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 border border-indigo-500/40'
+                            : 'bg-slate-800 text-slate-300 hover:bg-slate-750 border border-slate-700/60'
                         }`}
                       >
-                        <span>{customSubtitle.isEnabled ? 'Desativar legendas' : 'Ativar legendas'}</span>
+                        <span>{customSubtitle.isEnabled ? 'Desativar exibição da legenda' : 'Ativar exibição da legenda'}</span>
                         {customSubtitle.isEnabled ? (
-                          <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                          <Check className="w-4 h-4 text-indigo-400 shrink-0" />
                         ) : (
-                          <span className="text-[10px] text-slate-400">Desligada</span>
+                          <span className="text-[10px] text-slate-400 font-normal">Oculta</span>
                         )}
                       </button>
 
-                      {/* Ações de Substituição e Remoção */}
-                      <div className="flex items-center gap-1.5 pt-0.5">
+                      {/* Ações de Envio / Substituição e Remoção */}
+                      <div className="flex items-center gap-2 pt-0.5">
                         <button
+                          type="button"
                           onClick={() => subtitleInputRef.current?.click()}
                           disabled={isUploadingSubtitle}
-                          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 hover:text-white rounded-md text-xs font-medium transition-colors"
+                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-semibold shadow-md transition-all cursor-pointer"
                         >
-                          <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>Substituir (.srt)</span>
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Enviar legenda (.SRT)</span>
                         </button>
                         <button
+                          type="button"
                           onClick={handleRemoveSubtitle}
-                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                          className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg border border-slate-800 transition-colors"
                           title="Remover legenda"
                           aria-label="Remover legenda"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
                   ) : (
                     /* Conteúdo quando nenhuma legenda foi enviada */
-                    <div className="space-y-2.5">
-                      <div className="p-2.5 bg-slate-900/60 rounded-lg border border-dashed border-slate-800 text-center">
-                        <p className="text-xs text-slate-300 font-medium">Nenhuma legenda carregada</p>
-                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                          Selecione um arquivo .srt do seu celular ou computador para sincronizar com o vídeo.
+                    <div className="space-y-3">
+                      <div className="p-3 bg-slate-900/70 rounded-xl border border-dashed border-slate-800 text-center">
+                        <p className="text-xs text-slate-200 font-semibold">Nenhuma legenda carregada</p>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                          Selecione um arquivo .srt salvo no seu celular ou computador para sincronizar com o vídeo.
                         </p>
                       </div>
 
-                      {/* Botão Enviar legenda (.srt) */}
+                      {/* Botão Enviar legenda (.SRT) */}
                       <button
+                        type="button"
                         onClick={() => subtitleInputRef.current?.click()}
                         disabled={isUploadingSubtitle}
-                        className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white rounded-lg text-xs font-semibold shadow-md transition-all"
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white rounded-lg text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
                       >
-                        <Upload className="w-4 h-4" />
-                        <span>Enviar legenda (.srt)</span>
+                        <Upload className="w-4 h-4 text-white" />
+                        <span>Enviar legenda (.SRT)</span>
                       </button>
 
                       {/* Opção rápida de teste */}
                       <button
+                        type="button"
                         onClick={handleLoadDemoSrt}
-                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 bg-slate-800/80 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-md text-[11px] font-medium transition-colors"
+                        className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800/80 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-lg text-[11px] font-medium transition-colors"
                       >
-                        <Sparkles className="w-3.5 h-3.5" />
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                         <span>Testar com legenda de exemplo</span>
                       </button>
                     </div>
@@ -1356,17 +1445,19 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
             {/* Menu Integrado de Configurações (Qualidade + Velocidade) */}
             <div className="relative">
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowSettingsMenu(!showSettingsMenu);
+                  setShowSubtitleMenu(false);
                   setSettingsView('main');
                 }}
-                className="player-menu-trigger h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+                className="player-menu-trigger h-9 sm:h-10 px-2 sm:px-2.5 flex items-center gap-1.5 text-xs font-medium hover:text-white rounded-lg hover:bg-white/10 transition-colors"
                 title="Configurações (Qualidade e Velocidade)"
                 aria-label="Configurações"
               >
                 <Settings className="w-4 h-4 text-slate-300" />
-                <span className="hidden xs:inline uppercase text-[11px] font-mono text-slate-300">
+                <span className="hidden sm:inline uppercase text-[11px] font-mono text-slate-300">
                   {selectedQuality}
                 </span>
               </button>
@@ -1374,7 +1465,7 @@ Você pode desativar, reativar ou substituir a legenda a qualquer momento.
               {showSettingsMenu && (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className="player-menu-content absolute bottom-12 right-0 w-48 sm:w-52 max-w-[calc(100vw-1.5rem)] max-h-[60vh] bg-[#12131A]/95 border border-slate-800/90 rounded-xl p-1.5 shadow-2xl z-50 backdrop-blur-md overflow-y-auto custom-scrollbar"
+                  className="player-menu-content fixed sm:absolute bottom-16 sm:bottom-14 left-3 right-3 sm:left-auto sm:right-0 w-auto sm:w-52 max-w-sm sm:max-w-none mx-auto sm:mx-0 max-h-[60vh] bg-[#12131A]/98 border border-slate-700/80 rounded-2xl sm:rounded-xl p-2 shadow-2xl z-50 backdrop-blur-xl overflow-y-auto custom-scrollbar"
                 >
                   {/* Visão Principal das Configurações */}
                   {settingsView === 'main' && (
